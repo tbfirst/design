@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 引入父依赖 ———— tbfirst-common（该依赖又引入顶级父依赖 ———— tbfirst-parent） -->
+    <parent>
+        <groupId>com.tbfirst</groupId>
+        <artifactId>tbfirst-common</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tbfirst-common-log</artifactId>
+    <name>tbfirst-common-log</name>
+    <description>MDC TraceId 过滤器 + Logstash JSON 编码器（面向 Servlet 栈）</description>
+
+    <!--
+        设计原则：
+        1. 只依赖 spring-web / servlet-api / logback / logstash-encoder，不拉 starter
+        2. Gateway 等 WebFlux 栈不应引本模块，另写一个 WebFilter 版本或改 WebFlux 专用
+    -->
+    <dependencies>
+        <!-- tbfirst 内部：TraceIdUtil / Header 常量 -->
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-core</artifactId>
+        </dependency>
+
+        <!-- Spring Boot 自动装配 API -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+
+        <!-- Spring Web：OncePerRequestFilter 基类 -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
+        </dependency>
+
+        <!-- Servlet API：HttpServletRequest / HttpServletResponse -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- SLF4J API：MDC 操作 -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- Logback 核心：LogstashEncoder 运行时需要 -->
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Logstash 编码器：结构化 JSON 日志 -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+</project>

@@ -1,0 +1,188 @@
+# 完整设施服务的 Docker Compose 配置文件
+# 含 postgres、redis、nacos、ai-python、gateway、auth、image、cinestitch
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: postgres1
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tbfirstdatabase
+      POSTGRES_USER: user1
+      POSTGRES_PASSWORD: 123456
+    ports:
+      - "5432:5432"
+    volumes:
+      # 数据卷挂载：Docker 命名卷 pgdata -> 容器 /var/lib/postgresql/data（持久化 PostgreSQL 数据）
+      - pgdata:/var/lib/postgresql/data
+      # 文件挂载：宿主机 ./infra/postgres/init.sql -> 容器 /docker-entrypoint-initdb.d/init.sql（只读，首次初始化执行）
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      # 健康检查：通过 pg_isready 检查数据库可用性
+      test: ["CMD-SHELL", "pg_isready -U user1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:latest
+    container_name: tbfirst-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      # 健康检查：redis-cli ping 返回 PONG 则健康
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nacos:
+    image: nacos/nacos-server:v3.1.1
+    container_name: tbfirst-nacos
+    restart: unless-stopped
+    environment:
+      MODE: standalone                # standalone单机模式
+      NACOS_AUTH_ENABLE: "true"       # 开启身份认证
+      # 自定义密钥和身份标识
+      NACOS_AUTH_TOKEN: SecretKey012345678901234567890123456789012345678901234567890123456789
+      NACOS_AUTH_IDENTITY_KEY: tbfirst
+      NACOS_AUTH_IDENTITY_VALUE: tbfirst
+      JVM_XMS: 512m
+      JVM_XMX: 512m
+    ports:
+      - "8080:8080" # Console UI（浏览器访问）
+      - "8848:8848" # HTTP API（服务注册/配置中心）
+      - "9848:9848" # gRPC client（2.x/3.x 客户端通信）
+      - "9849:9849" # gRPC server（服务端通信）
+    volumes:
+      # 数据卷挂载：nacos-data -> /home/nacos/data（持久化配置/元数据）
+      - nacos-data:/home/nacos/data
+      # 日志卷挂载：nacos-logs -> /home/nacos/logs（便于排障）
+      - nacos-logs:/home/nacos/logs
+
+# ai-python 服务除了从 E:\tbfirst\tbfirst-ai-python\Dockerfile 构建镜像
+# 还可在拉取完所有需要的依赖后直接在终端：uvicorn app.main:app --host 0.0.0.0 --port 8200 --reload
+  ai-python:
+    build: ./tbfirst-ai-python         # 从本地./tbfirst-ai-python目录构建镜像
+    container_name: tbfirst-ai-python
+    # 优雅停机：> common 配置的 timeout-per-shutdown-phase(30s)，给在途请求收尾时间，
+    # 否则 docker 默认 10s 后 SIGKILL，graceful 来不及生效。
+    restart: unless-stopped
+    stop_grace_period: 40s
+    env_file: .env
+    environment:
+      APP_PORT: 8200
+      # 同一 compose 网络内，优先使用用 Docker内部 DNS服务名访问基础设施
+      NACOS_ADDR: nacos:8848
+      REDIS_HOST: redis
+      DB_HOST: postgres
+      # image_uri.py 拉取参考图时走内部 image 服务 proxy（而非 localhost:8102 默认值）
+      IMAGE_REF_BASE_URL: http://image:8102
+    ports: ["8200:8200"]
+    depends_on:
+      # 启动顺序与健康依赖：postgres/redis 健康后再启动 AI 服务
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      nacos: { condition: service_started }
+
+# 以下服务要启动除了可使用 E:\tbfirst\infra\docker\java.Dockerfile 构建镜像（要构建对应服务镜像时间长）
+# 还可直接在idea中启动
+  gateway:
+    build:
+      context: .
+      dockerfile: infra/docker/java.Dockerfile
+      args:
+        MODULE: tbfirst-gateway
+    container_name: tbfirst-gateway
+    restart: unless-stopped
+    stop_grace_period: 40s
+    env_file: .env
+    environment:
+      # 网关通过服务名访问 nacos/redis，避免写死 IP
+      NACOS_ADDR: nacos:8848
+      REDIS_HOST: redis
+    ports: ["8000:8000"]
+    depends_on:
+      nacos: { condition: service_started }
+      redis: { condition: service_healthy }
+
+  auth:
+    build:
+      context: .
+      dockerfile: infra/docker/java.Dockerfile
+      args:
+        MODULE: tbfirst-auth
+    container_name: tbfirst-auth
+    restart: unless-stopped
+    stop_grace_period: 40s
+    env_file: .env
+    environment:
+      NACOS_ADDR: nacos:8848
+      DB_HOST: postgres
+      REDIS_HOST: redis
+    ports: ["8101:8101"]
+    depends_on:
+      # auth 依赖 postgres + nacos，避免未就绪时启动失败
+      postgres: { condition: service_healthy }
+      nacos: { condition: service_started }
+
+  image:
+    build:
+      context: .
+      dockerfile: infra/docker/java.Dockerfile
+      args:
+        MODULE: tbfirst-image
+    container_name: tbfirst-image
+    restart: unless-stopped
+    stop_grace_period: 40s
+    env_file: .env
+    environment:
+      NACOS_ADDR: nacos:8848
+      DB_HOST: postgres
+      REDIS_HOST: redis
+      # v3 S2：当 .env 里 STORAGE_PROVIDER=gcs 时自动启用 GCS 后端；SDK 通过此环境变量找 SA JSON。
+      # 路径必须与下方 volume 挂载的容器内路径一致。
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcs-sa.json
+    volumes:
+      # GCS Service Account JSON 只读挂载（约 2KB，不适合走 env）。
+      # 宿主机文件由 GCP Console 下载，保存到 secrets/gcs-sa.json（已被 .gitignore 排除）。
+      # STORAGE_PROVIDER=local 时此挂载不影响行为（服务不读 GOOGLE_APPLICATION_CREDENTIALS）。
+      - ./secrets/gcs-sa.json:/secrets/gcs-sa.json:ro
+    ports: ["8102:8102"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      # image 依赖 AI 服务提供推理/处理能力
+      ai-python: { condition: service_started }
+
+  cinestitch:
+    build:
+      context: .
+      dockerfile: infra/docker/java.Dockerfile
+      args:
+        MODULE: tbfirst-cinestitch
+    container_name: tbfirst-cinestitch
+    restart: unless-stopped
+    stop_grace_period: 40s
+    env_file: .env
+    environment:
+      NACOS_ADDR: nacos:8848
+      DB_HOST: postgres
+      REDIS_HOST: redis
+    ports: ["8105:8105"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      nacos: { condition: service_started }
+
+volumes:
+  # PostgreSQL 数据持久卷
+  pgdata:
+  # Redis AOF 持久卷
+  redis-data:
+  # Nacos 数据持久卷
+  nacos-data:
+  # Nacos 日志持久卷
+  nacos-logs:

@@ -1,0 +1,1 @@
+ALTER TABLE cinestitch.cinestitch_job ADD COLUMN IF NOT EXISTS image_url VARCHAR(600);

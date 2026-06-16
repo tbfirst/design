@@ -1,0 +1,177 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.tbfirst</groupId>
+    <version>1.0.0-SNAPSHOT</version>
+    <artifactId>tbfirst-dependencies</artifactId>
+    <packaging>pom</packaging>      <!-- BOM 模块，打包类型为 pom -->
+    <name>tbfirst-dependencies</name>
+    <description>tbfirst 内部 BOM：集中管理 tbfirst-common-* 子模块以及若干第三方库的版本</description>
+
+    <properties>
+        <!--  Google Cloud libraries BOM：统一锁 google-cloud-storage / google-auth / gax 等版本，
+             避免子模块 import 时手动写 google-cloud-storage 版本。
+             26.78.0 适配 google-cloud-storage 2.64.x（V4 签名 + WriteChannel 都已稳定）。    -->
+        <google-cloud-libraries-bom.version>26.78.0</google-cloud-libraries-bom.version>
+        <!--  JWT 令牌签发/解析（jjwt 0.12+ 的新 API，api/impl/jackson 三件套）    -->
+        <jjwt.version>0.12.6</jjwt.version>
+        <!--  编译期注解    -->
+        <lombok.version>1.18.34</lombok.version>
+        <!--  Java 工具包   -->
+        <hutool.version>5.8.32</hutool.version>
+        <!--  结构化 JSON 日志编码器   -->
+        <logstash-encoder.version>8.0</logstash-encoder.version>
+        <!--  MyBatis-Plus（Spring Boot 3.x 专用 starter，不是旧版 mybatis-plus-boot-starter）  -->
+        <mybatis-plus.version>3.5.7</mybatis-plus.version>
+        <!--  Redisson 分布式锁与 Redis 客户端（替代手写 SET NX EX，支持可重入/Lua 原子）  -->
+        <redisson.version>3.34.1</redisson.version>
+        <!--  SpringDoc OpenAPI 3 + Swagger UI：每个 Java 业务服务自带文档入口
+             /v3/api-docs（JSON）和 /swagger-ui/index.html（UI 页）。
+             需 ≥2.6 才与 Spring Framework 6.2.x 兼容（旧版调用已删除的
+             ControllerAdviceBean(Object) 构造器，会抛 NoSuchMethodError）。   -->
+        <springdoc.version>2.8.13</springdoc.version>
+    </properties>
+    <!--
+        BOM 模块职责：
+        1. 锁定所有 tbfirst-common-* 子模块版本，子工程引入时无需写 version
+        2. 锁定少数第三方库（JWT / Knife4j / MapStruct / Hutool / Logstash）的版本
+        3. 其余版本全部由父 POM 引入的 spring-boot-dependencies / spring-cloud-dependencies / spring-cloud-alibaba-dependencies 决定
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <!-- ============ Google Cloud libraries BOM ============ -->
+            <!-- import scope，子模块引 google-cloud-storage 等不写 version。
+                 tbfirst-common-oss 引为 optional，tbfirst-image 显式启用。 -->
+            <dependency>
+                <groupId>com.google.cloud</groupId>
+                <artifactId>libraries-bom</artifactId>
+                <version>${google-cloud-libraries-bom.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- ============ tbfirst 公共库（8 个子模块） ============ -->
+            <dependency>
+                <groupId>com.tbfirst</groupId>
+                <artifactId>tbfirst-common-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.tbfirst</groupId>
+                <artifactId>tbfirst-common-web</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.tbfirst</groupId>
+                <artifactId>tbfirst-common-security</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.tbfirst</groupId>
+                <artifactId>tbfirst-common-redis</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.tbfirst</groupId>
+                <artifactId>tbfirst-common-datasource</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.tbfirst</groupId>
+                <artifactId>tbfirst-common-feign</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.tbfirst</groupId>
+                <artifactId>tbfirst-common-log</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.tbfirst</groupId>
+                <artifactId>tbfirst-common-oss</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- ============ 第三方库：JWT ============ -->
+            <!-- JWT 编程 API -->
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-api</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <!-- JWT 算法实现（HS256 / RS256），运行时加载 -->
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-impl</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+            <!-- JWT Claims 的 Jackson JSON 序列化，运行时加载 -->
+            <dependency>
+                <groupId>io.jsonwebtoken</groupId>
+                <artifactId>jjwt-jackson</artifactId>
+                <version>${jjwt.version}</version>
+            </dependency>
+
+            <!-- ============ 第三方库：工具与日志 ============ -->
+            <!-- Hutool 全家桶 -->
+            <dependency>
+                <groupId>cn.hutool</groupId>
+                <artifactId>hutool-all</artifactId>
+                <version>${hutool.version}</version>
+            </dependency>
+            <!-- Logstash JSON 日志编码器 -->
+            <dependency>
+                <groupId>net.logstash.logback</groupId>
+                <artifactId>logstash-logback-encoder</artifactId>
+                <version>${logstash-encoder.version}</version>
+            </dependency>
+            <!-- MapStruct：DTO/Entity 映射 -->
+            <dependency>
+                <groupId>org.mapstruct</groupId>
+                <artifactId>mapstruct</artifactId>
+                <version>${mapstruct.version}</version>
+            </dependency>
+
+            <!-- ============ 第三方库：MyBatis-Plus ============ -->
+            <!-- MyBatis-Plus 自动装配 starter（Spring Boot 3.x 专用） -->
+            <!-- 3.5.7 的分页插件依赖 jsqlparser 由 mybatis-plus-extension 传递引入，无需单独声明 -->
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+                <version>${mybatis-plus.version}</version>
+            </dependency>
+
+            <!-- ============ 第三方库：SpringDoc OpenAPI ============ -->
+            <!-- 业务 Java 服务直接依赖 webmvc-ui 即可获得 /v3/api-docs + /swagger-ui/index.html。
+                 锁定 2.8.13 确保兼容 Spring Boot 3.5.x / Spring Framework 6.2.x —— 旧版会调用
+                 已删除的 ControllerAdviceBean(Object) 构造器抛 NoSuchMethodError。 -->
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-common</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+
+            <!-- ============ 第三方库：Redisson ============ -->
+            <!-- Redisson Spring Boot starter：自动接管 ConnectionFactory，提供 RedissonClient + RLock 等 -->
+            <!-- 3.34.x 适配 Spring Boot 3.5.x；内部传递引入 redisson-spring-data-3X 适配器 -->
+            <dependency>
+                <groupId>org.redisson</groupId>
+                <artifactId>redisson-spring-boot-starter</artifactId>
+                <version>${redisson.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>

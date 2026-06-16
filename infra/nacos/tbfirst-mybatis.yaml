@@ -1,0 +1,16 @@
+# 所有服务共享的 MyBatis-Plus 配置
+# Data ID: tbfirst-mybatis.yaml   Group: DEFAULT_GROUP   Namespace: dev
+#
+# 各服务的 application.yml 仅需保留自己的 mybatis-plus.type-aliases-package
+# （com.tbfirst.<service>.entity），其余公共项全部从这里下发，改一处全员生效。
+mybatis-plus:
+  mapper-locations: classpath*:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-not-delete-value: 0
+      logic-delete-value: 1

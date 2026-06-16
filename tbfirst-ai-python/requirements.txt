@@ -1,0 +1,36 @@
+fastapi>=0.115.6
+uvicorn[standard]>=0.34.0
+pydantic>=2.10.4
+pydantic-settings>=2.7.1
+python-dotenv>=1.0.1
+
+# AI Providers
+google-genai>=1.34.0
+openai>=1.58.1
+anthropic>=0.42.0
+litellm>=1.61.0
+
+# Cache & storage
+redis>=5.2.1
+
+# RAG
+langchain>=0.3.13
+langchain-community>=0.3.13
+sentence-transformers>=3.3.1
+pgvector>=0.3.6
+psycopg[binary]>=3.2.3
+
+# MCP
+mcp>=1.1.2
+
+# Registry — 通过 httpx 直接调 Nacos HTTP API，不需要 SDK
+# (httpx 已作为 google-genai/openai/anthropic 的依赖自动安装)
+
+# Observability
+structlog>=24.4.0
+
+# V6.M2 六层记忆 + LangGraph
+langgraph>=0.2.50
+langgraph-checkpoint-postgres>=2.0.0
+langchain-google-genai>=2.0.0
+langchain-postgres>=0.0.12

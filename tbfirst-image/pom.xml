@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.tbfirst</groupId>
+        <artifactId>tbfirst</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tbfirst-image</artifactId>
+    <name>tbfirst-image</name>
+    <description>BrandGenius AI 生图业务服务（对接 Python AI）</description>
+
+    <dependencies>
+        <!-- ============ tbfirst 公共库 ============ -->
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-datasource</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-redis</artifactId>
+        </dependency>
+        <!-- Feign 默认配置 / TraceId 透传 -->
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-feign</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-log</artifactId>
+        </dependency>
+        <!-- 对象存储抽象（本地落盘实现，用于图片/素材） -->
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-oss</artifactId>
+        </dependency>
+
+        <!--
+            Google Cloud Storage SDK：v3 S2 起 tbfirst-image 启用 GCS 实现。
+            common-oss 把它声明为 optional，业务侧需要在此显式拉入运行 classpath。
+            具体 GoogleCloudStorageService 装配条件由 app.storage.provider=gcs 控制（StorageConfig）。
+        -->
+        <dependency>
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-storage</artifactId>
+        </dependency>
+
+        <!-- ============ Spring Boot Starter 应用层 ============ -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <!-- MyBatis-Plus（Spring Boot 3.x 专用 starter） -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- ============ 数据库 ============ -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+
+        <!-- ============ Spring Cloud / Alibaba ============ -->
+        <!-- OpenFeign：声明式调 tbfirst-ai-python -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+        <!-- 客户端负载均衡：Feign + lb://tbfirst-ai-python 必需 -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
+        </dependency>
+
+        <!-- ============ 韧性：熔断 ============ -->
+        <!-- Resilience4j 原生 starter（自动装配 CircuitBreakerRegistry，读取 resilience4j.* 配置）。
+             刻意不用 spring-cloud-starter-circuitbreaker-resilience4j：其 CircuitBreakerFactory.run
+             默认带 1s TimeLimiter，会把 60-600s 的生图调用直接判超时。这里用 registry.executeSupplier
+             只套熔断、不加时限。版本不在现有 BOM 管理范围，显式锁定。 -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-spring-boot3</artifactId>
+            <version>2.2.0</version>
+        </dependency>
+
+        <!-- ============ 其他 ============ -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

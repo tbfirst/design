@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 引入父依赖 ———— tbfirst-common（该依赖又引入顶级父依赖 ———— tbfirst-parent） -->
+    <parent>
+        <groupId>com.tbfirst</groupId>
+        <artifactId>tbfirst-common</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tbfirst-common-datasource</artifactId>
+    <name>tbfirst-common-datasource</name>
+    <description>MyBatis-Plus BaseEntity 与审计 / 分页 / 逻辑删除自动装配</description>
+
+    <!--
+        设计原则：
+        1. 业务服务自行引入数据库驱动 + flyway-core
+        2. 本模块贡献 BaseEntity / MetaObjectHandler / MybatisPlusInterceptor Bean
+        3. @ConditionalOnClass(com.baomidou.mybatisplus.core.MybatisConfiguration.class) 保证无 MP 的服务不会触发装配
+    -->
+    <dependencies>
+        <!-- tbfirst 内部：core（异常体系）+ security（读当前用户 ID 做审计） -->
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-security</artifactId>
+        </dependency>
+
+        <!-- Spring Boot 自动装配 API -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+
+        <!-- MyBatis-Plus：BaseMapper / @TableName / @TableId / @TableField / @TableLogic / MetaObjectHandler 等 -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        </dependency>
+
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+</project>

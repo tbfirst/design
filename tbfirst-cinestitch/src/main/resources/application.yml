@@ -1,0 +1,57 @@
+server:
+  port: 8105
+
+spring:
+  application:
+    name: tbfirst-cinestitch
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    date-format: "yyyy-MM-dd HH:mm:ss"
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  config:
+    # 多份共享 dataId：公共配置 + MyBatis 公共段（统一治理，见 infra/nacos/）
+    import:
+      - "optional:nacos:tbfirst-common.yaml?group=DEFAULT_GROUP&namespace=${NACOS_NS:dev}"
+      - "optional:nacos:tbfirst-mybatis.yaml?group=DEFAULT_GROUP&namespace=${NACOS_NS:dev}"
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:localhost:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        namespace: ${NACOS_NS:dev}
+      config:
+        namespace: ${NACOS_NS:dev}
+        file-extension: yaml
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:tbfirstdatabase}?currentSchema=cinestitch
+    username: ${DB_USER:user1}
+    password: ${DB_PASSWORD:123456}
+    driver-class-name: org.postgresql.Driver
+  flyway:
+    enabled: true
+    schemas: cinestitch
+    default-schema: cinestitch
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+mybatis-plus:
+  # 公共项（mapper-locations / configuration / global-config）已下沉至 Nacos: tbfirst-mybatis.yaml
+  type-aliases-package: com.tbfirst.cinestitch.entity
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:oumUxneCYI3+bJVH3PnaVyxhXrVCjUMbu8zb9kO1hUU=}
+  ai-python:
+    url: ${AI_PYTHON_URL:http://localhost:8200}
+
+logging:
+  level:
+    com.tbfirst: DEBUG

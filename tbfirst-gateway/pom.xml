@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.tbfirst</groupId>
+        <artifactId>tbfirst</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tbfirst-gateway</artifactId>
+    <name>tbfirst-gateway</name>
+    <description>微服务网关：路由、鉴权、限流（WebFlux 响应式栈）</description>
+
+    <!--
+        应用层服务。注意：
+        1. 本服务是 WebFlux 响应式栈，严禁引入 tbfirst-common-web / tbfirst-common-log / tbfirst-common-datasource
+           这些 Servlet 栈的公共库
+        2. 只复用 tbfirst-common-core（R/ErrorCode）和 tbfirst-common-security 的 JwtUtil 工具类
+    -->
+    <dependencies>
+        <!-- tbfirst 公共库：仅纯 POJO 核心，不拉 Servlet 依赖 -->
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-core</artifactId>
+        </dependency>
+        <!-- tbfirst 公共库：仅为了复用 JwtUtil；排除 servlet-api，避免 WebFlux 栈混入 Servlet API -->
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-security</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>jakarta.servlet</groupId>
+                    <artifactId>jakarta.servlet-api</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <!-- Spring Cloud Gateway（WebFlux 版）：Spring Cloud 2025 后的新 artifactId -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-gateway-server-webflux</artifactId>
+        </dependency>
+        <!-- 客户端侧负载均衡：配合路由 lb://service-name 使用 -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+
+        <!-- Nacos 服务发现：将本网关注册到 Nacos 并发现下游服务 -->
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
+        </dependency>
+        <!-- Nacos 配置中心：拉取 tbfirst-common.yaml 等共享配置 -->
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
+        </dependency>
+
+        <!-- Reactive 版 Redis：RequestRateLimiter（Redis 令牌桶限流）必需 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis-reactive</artifactId>
+        </dependency>
+
+        <!-- Actuator：暴露 /actuator/health /actuator/gateway 等网关自身运行时端点 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- 打可执行 fat jar，支持 java -jar app.jar 直接启动 -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

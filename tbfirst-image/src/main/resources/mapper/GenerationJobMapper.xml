@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+    GenerationJobMapper — 对应 image.generation_job 表。
+    包含：
+      1) countSuccessByUserIds  — 被 auth 服务 Feign 调用做 admin 用户列表页汇总
+      2) findTop200VisibleToUser — 历史 Modal 主查询
+      3) markSaved              — "下载并收藏" 动作
+    JSONB：resultMap 中 phase_config 用 PgJsonbStringTypeHandler；实体 @TableName(autoResultMap=true)。
+-->
+<mapper namespace="com.tbfirst.image.mapper.GenerationJobMapper">
+
+    <resultMap id="generationJobResultMap" type="com.tbfirst.image.entity.GenerationJob">
+        <id property="id" column="id"/>
+        <result property="phase" column="phase"/>
+        <result property="userId" column="user_id"/>
+        <result property="model" column="model"/>
+        <result property="prompt" column="prompt"/>
+        <result property="assetUrls" column="asset_urls"/>
+        <result property="status" column="status"/>
+        <result property="errorMsg" column="error_msg"/>
+        <result property="phaseConfig" column="phase_config"
+                typeHandler="com.tbfirst.image.typehandler.PgJsonbStringTypeHandler"/>
+        <result property="referenceCount" column="reference_count"/>
+        <result property="groupId" column="group_id"/>
+        <result property="saved" column="saved"/>
+        <result property="lastAccessAt" column="last_access_at"/>
+        <result property="createTime" column="create_time"/>
+        <result property="updateTime" column="update_time"/>
+        <result property="createBy" column="create_by"/>
+        <result property="updateBy" column="update_by"/>
+        <result property="deleted" column="deleted"/>
+    </resultMap>
+
+    <!--
+        countSuccessByUserIds
+        业务：按 userId 聚合 "成功生成次数"，供 auth 服务 admin 用户列表页的 total_generations 列。
+        返回：行级 Map { userId: Long, cnt: Long }，Service 层再规整成 Map<String, Long>。
+        引号：PG 区分标识符大小写；"userId" 加引号保证驼峰列名原样输出。
+    -->
+    <select id="countSuccessByUserIds" resultType="map">
+        SELECT user_id AS "userId", COUNT(*) AS cnt
+        FROM image.generation_job
+        WHERE status = 'success' AND deleted = 0
+          AND user_id IN
+          <foreach collection="userIds" item="u" open="(" separator="," close=")">#{u}</foreach>
+        GROUP BY user_id
+    </select>
+
+    <!--
+        findTop200VisibleToUser
+        业务：历史 Modal 主查询 —— 当前用户可见的任务（本人 + 同组）。
+        OR 条件：传入 groupId 为 null 时自动退化为 "只看本人"，无需 Service 分支。
+        jdbcType=BIGINT：显式声明防止 MyBatis 把 null 的类型转换推断到 OTHER，PG 对 IS NOT NULL 的 null 参数会用类型兜底。
+        LIMIT 200：前端 Modal 固定渲染上限；超出时交给后续分页或滚动加载（当前版本不做）。
+    -->
+    <select id="findTop200VisibleToUser" resultMap="generationJobResultMap">
+        SELECT * FROM image.generation_job
+        WHERE deleted = 0
+          AND ( user_id = #{userId}
+                OR ( #{groupId, jdbcType=BIGINT} IS NOT NULL AND group_id = #{groupId} ) )
+        ORDER BY id DESC
+        LIMIT 200
+    </select>
+
+    <!--
+        markSaved
+        业务："下载并收藏"；把任务 saved 置 TRUE 并刷 last_access_at（LRU 清理器用）。
+        鉴权：WHERE 里同时兜住"作者自己" + "同组成员"两种情况；不是作者也不是同组 → 0 行。
+        返回：受影响行数，Service 层按 == 0 抛 404，避免额外 SELECT 再判权。
+    -->
+    <update id="markSaved">
+        UPDATE image.generation_job
+        SET saved = TRUE, last_access_at = #{now}
+        WHERE id = #{id} AND deleted = 0
+          AND ( user_id = #{userId}
+                OR ( #{groupId, jdbcType=BIGINT} IS NOT NULL AND group_id = #{groupId} ) )
+    </update>
+
+</mapper>

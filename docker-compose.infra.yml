@@ -1,0 +1,74 @@
+# 基础设施服务的 Docker Compose 配置文件，包含 PostgreSQL、Redis 和 Nacos 服务的定义和配置。
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: postgres1
+    # 单机加固：容器异常退出自动拉起（缓解"基础设施反复掉线"）；手动 stop 不会被拉起。
+    restart: unless-stopped
+    environment:
+      # 必须与各服务默认 DB_NAME(application.yml: tbfirstdatabase)及 docker-compose.yml 保持一致;
+      # 旧值 jvlangdatabase 是项目改名(jvlang→tbfirst)时遗留,会导致本地起服务报
+      # "database tbfirstdatabase does not exist" 而启动失败。
+      POSTGRES_DB: tbfirstdatabase
+      POSTGRES_USER: user1
+      POSTGRES_PASSWORD: 123456
+    ports:
+      - "5432:5432"
+    volumes:
+      # 数据卷挂载：Docker 命名卷 pgdata -> 容器 /var/lib/postgresql/data（持久化 PostgreSQL 数据）
+      - pgdata:/var/lib/postgresql/data
+      # 文件挂载：宿主机 ./infra/postgres/init.sql -> 容器 /docker-entrypoint-initdb.d/init.sql（只读，首次初始化执行）
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      # 健康检查：通过 pg_isready 检查数据库可用性
+      test: ["CMD-SHELL", "pg_isready -U user1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:latest
+    container_name: tbfirst-redis
+    restart: unless-stopped
+    # 单机加固：开启 AOF 持久化（默认仅 RDB 快照，宕机会丢最近写入），数据落命名卷 redis-data。
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      # 健康检查：redis-cli ping 返回 PONG 则健康
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  nacos:
+    image: nacos/nacos-server:v3.1.1
+    container_name: tbfirst-nacos
+    restart: unless-stopped
+    environment:
+      MODE: standalone                # standalone单机模式
+      NACOS_AUTH_ENABLE: "true"       # 开启身份认证
+      # 自定义密钥和身份标识
+      NACOS_AUTH_TOKEN: SecretKey012345678901234567890123456789012345678901234567890123456789
+      NACOS_AUTH_IDENTITY_KEY: tbfirst
+      NACOS_AUTH_IDENTITY_VALUE: tbfirst
+      JVM_XMS: 512m
+      JVM_XMX: 512m
+    ports:
+      - "8080:8080" # Console UI（浏览器访问）
+      - "8848:8848" # HTTP API（服务注册/配置中心）
+      - "9848:9848" # gRPC client（2.x/3.x 客户端通信）
+      - "9849:9849" # gRPC server（服务端通信）
+    volumes:
+      # 数据卷挂载：nacos-data -> /home/nacos/data（持久化配置/元数据）
+      - nacos-data:/home/nacos/data
+      # 日志卷挂载：nacos-logs -> /home/nacos/logs（便于排障）
+      - nacos-logs:/home/nacos/logs
+
+volumes:
+  pgdata:
+  redis-data:
+  nacos-data:
+  nacos-logs:

@@ -1,0 +1,155 @@
+server:
+  # 网关服务监听端口（外部统一入口）
+  port: 8000
+
+spring:
+  application:
+    # 注册到 Nacos 的服务名
+    name: tbfirst-gateway
+  profiles:
+    # 运行环境，默认 dev
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  config:
+    # Spring Boot 2.4+ 配置导入方式：从 Nacos 读取共享配置
+    # optional 表示 Nacos 临时不可用时也可继续启动
+    import: "optional:nacos:tbfirst-common.yaml?group=DEFAULT_GROUP&namespace=${NACOS_NS:dev}"
+  cloud:
+    nacos:
+      # Nacos 服务地址（不带协议）
+      server-addr: ${NACOS_ADDR:localhost:8848}
+      # Nacos 访问凭据
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        # 显式写 server-addr，避免部分 Spring Cloud Alibaba 版本不继承 nacos.server-addr
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        # 服务注册命名空间
+        namespace: ${NACOS_NS:dev}
+        # 注册开关（被 tbfirst-common.yaml 关闭时会导致服务不注册，这里显式开启）
+        register-enabled: true
+        ephemeral: true
+      config:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        # 配置中心命名空间
+        namespace: ${NACOS_NS:dev}
+        # Nacos 配置文件后缀
+        file-extension: yaml
+    gateway:
+      server:
+        webflux:
+          discovery:
+            locator:
+              # 让 Spring Cloud Gateway 为每个 Nacos 注册的服务自动建立
+              # Path=/<service-id>/** + RewritePath 路由 —— 通过网关访问下游
+              # swagger-ui 时需要：浏览器请求 :8000/tbfirst-image/swagger-ui/index.html
+              # 会被自动剥前缀转发到 image:8102/swagger-ui/index.html。
+              # 业务路径 /api/auth/**、/api/image/** 仍走下方手工声明的路由不受影响。
+              enabled: true
+              # Nacos 注册的服务名是小写中划线（tbfirst-image），
+              # 不开启此项时 LoadBalancer 会按 TBFIRST-IMAGE 大写匹配从而 503。
+              lower-case-service-id: true
+          routes:
+            # 认证服务路由
+            - id: tbfirst-auth
+              uri: lb://tbfirst-auth
+              predicates:
+                - Path=/api/auth/**
+              filters:
+                - StripPrefix=0
+            # 图片服务路由
+            - id: tbfirst-image
+              uri: lb://tbfirst-image
+              predicates:
+                - Path=/api/image/**
+              # V5.XVII.K.4：网关侧令牌桶限流（用户级、Redis 后端）。
+              # 配额硬熔断（日额）由 QuotaCheckFilter 提前拦截，本 filter 仅对短时 burst 防护。
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 1
+                    redis-rate-limiter.burstCapacity: 10
+                    redis-rate-limiter.requestedTokens: 1
+                    key-resolver: "#{@userKeyResolver}"
+            # 视频拼接服务路由
+            - id: tbfirst-cinestitch
+              uri: lb://tbfirst-cinestitch
+              predicates:
+                - Path=/api/cinestitch/**
+            # 静态资源路由（由 image 服务提供）
+            - id: tbfirst-image-static
+              uri: lb://tbfirst-image
+              predicates:
+                - Path=/static/**
+            # GCS 反代路由（v3 起）：浏览器经此读图，避免直发 storage.googleapis.com
+            # 不剥前缀 —— image 服务的 ImageProxyController 用 /img/** 原样匹配
+            # 详见 .ralph/specs/gcs-proxy.md
+            - id: tbfirst-image-proxy
+              uri: lb://tbfirst-image
+              predicates:
+                - Path=/img/**
+            # Python AI 服务路由（重写前缀）
+            - id: tbfirst-ai-python
+              uri: lb://tbfirst-ai-python
+              predicates:
+                - Path=/api/ai/**
+              filters:
+                - RewritePath=/api/ai/(?<seg>.*), /${seg}
+                # V5.XVII.K.4：AI 服务令牌桶限流（同一用户匿名 burst 10、稳态 1 req/s）
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 1
+                    redis-rate-limiter.burstCapacity: 10
+                    redis-rate-limiter.requestedTokens: 1
+                    key-resolver: "#{@userKeyResolver}"
+          # Knife4j 文档聚合的转发已交给 discovery.locator 自动路由处理：
+          # Spring Cloud Gateway 会为每个 Nacos 服务自动创建 Path=/<service-id>/** 路由，
+          # /tbfirst-image/v3/api-docs 等请求会被自动 RewritePath 后转发到下游 /v3/api-docs。
+          # 因此无需再手写 *-doc 路由。ai-python 是 FastAPI（OpenAPI 路径为 /openapi.json，
+          # 不是 /v3/api-docs），暂不纳入 Knife4j 聚合，仍可直访 :8200/docs。
+          # 生图等耗时接口需要放开网关侧超时，否则客户端还在等，网关先返回 504
+          # V5.XII.7：bump 至 620s，> image effective Feign 600s 给 20s buffer，
+          # 避免 gateway 提前关连接导致下游 ClientAbortException
+          httpclient:
+            connect-timeout: 10000
+            response-timeout: 620s
+  data:
+    redis:
+      # Redis 连接地址（网关用于缓存/会话等能力）
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+app:
+  jwt:
+    # JWT 验签密钥（建议通过环境变量注入，不在仓库明文保存）
+    secret: ${JWT_SECRET:oumUxneCYI3+bJVH3PnaVyxhXrVCjUMbu8zb9kO1hUU=}
+    # JWT 过期时间（毫秒）
+    expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+  quota:
+    image:
+      # 生图日额硬熔断默认值（仅作为兜底）。K.9 从 100 拉到 200 容纳 DNA 实验。
+      # 真实优先级：JWT claim personalModelCap (X-User-Personal-Cap 头) > 本配置 > 代码常量 DEFAULT_USER_CAP_FALLBACK。
+      # 设计目标：正常付费用户单日操作完全无感；本数值用来挡"账号盗刷 / 脚本刷量"。
+      # token_ledger（future.md §1.7）上线后本层将被按花费控制取代。
+      user-daily-default: ${IMAGE_QUOTA_USER_DAILY:10000}
+      # K.9: 配额"日重置"按此时区计算，与用户体感对齐；容器跑 UTC 但用户在 +8 也能正确切换。
+      zone: ${IMAGE_QUOTA_ZONE:Asia/Shanghai}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,gateway,nacosdiscovery
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    # 业务包日志级别
+    com.tbfirst: DEBUG
+    # Gateway 核心日志级别
+    org.springframework.cloud.gateway: INFO
+    # Nacos 注册过程全量日志，便于定位 "注册失败 / 命名空间不存在 / 鉴权失败" 等
+    com.alibaba.cloud.nacos: DEBUG
+    com.alibaba.nacos: INFO
+    org.springframework.cloud.client.discovery: DEBUG

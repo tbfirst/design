@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 引入父依赖 ———— tbfirst-common（该依赖又引入顶级父依赖 ———— tbfirst-parent） -->
+    <parent>
+        <groupId>com.tbfirst</groupId>
+        <artifactId>tbfirst-common</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tbfirst-common-oss</artifactId>
+    <name>tbfirst-common-oss</name>
+    <description>对象存储抽象层（本地 / MinIO / 云 OSS 可切换）</description>
+
+    <!--
+        设计原则：
+        1. 纯 Java 抽象，不强依赖任何具体 OSS SDK，也不引入 spring-boot-starter
+        2. 业务服务若需要 MinIO/阿里云 OSS/AWS S3，在自己 POM 里引入对应 SDK 并注册新的 StorageService 实现
+    -->
+    <dependencies>
+        <!-- tbfirst 内部 -->
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-core</artifactId>
+        </dependency>
+
+        <!-- SLF4J API：@Slf4j 注解生成的 log 字段需要此 API -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!--
+            Google Cloud Storage：optional，业务侧（tbfirst-image）显式启用后才进运行 classpath。
+            版本由父级 tbfirst-dependencies 引入的 libraries-bom 锁定，此处不写 version。
+            含 GoogleCloudStorageService 实现的 V4 签名 / WriteChannel / Page 列举所需类。
+        -->
+        <dependency>
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-storage</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+</project>

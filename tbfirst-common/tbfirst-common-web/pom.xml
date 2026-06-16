@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 引入父依赖 ———— tbfirst-common（该依赖又引入顶级父依赖 ———— tbfirst-parent） -->
+    <parent>
+        <groupId>com.tbfirst</groupId>
+        <artifactId>tbfirst-common</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tbfirst-common-web</artifactId>
+    <name>tbfirst-common-web</name>
+    <description>MVC 全局异常处理 / CORS / 参数校验（面向 Servlet 栈业务服务，不引入 starter-web）</description>
+
+    <!--
+        设计原则：
+        1. 本模块只依赖 spring-web / spring-webmvc 的"类"，不通过 starter 强行绑定 Tomcat
+        2. 业务服务必须自己引 spring-boot-starter-web（或 reactive 栈不引本模块）
+        3. 这样 Gateway（WebFlux 栈）才不会被意外拉进 Servlet 依赖
+    -->
+    <dependencies>
+        <!-- tbfirst 内部：通用响应体 / 异常 / 常量 -->
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-core</artifactId>
+        </dependency>
+
+        <!-- Spring Boot 自动装配 API：提供 @AutoConfiguration / @ConditionalOnXxx 注解，本模块要写自动装配类 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+
+        <!-- Spring Web：@RestControllerAdvice / @ExceptionHandler / CorsFilter / OncePerRequestFilter 的来源 -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
+        </dependency>
+
+        <!-- Spring Web MVC -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-webmvc</artifactId>
+        </dependency>
+
+        <!-- Servlet API：HttpServletRequest / HttpServletResponse，由容器提供，provided 避免打包进 jar -->
+        <dependency>
+            <groupId>jakarta.servlet</groupId>
+            <artifactId>jakarta.servlet-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Bean Validation 规范：ConstraintViolationException 的来源 -->
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+
+        <!-- SLF4J API：@Slf4j 注解生成的 log 字段需要此 API -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+</project>

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 引入父依赖 ———— tbfirst-common（该依赖又引入顶级父依赖 ———— tbfirst-parent） -->
+    <parent>
+        <groupId>com.tbfirst</groupId>
+        <artifactId>tbfirst-common</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tbfirst-common-core</artifactId>
+    <name>tbfirst-common-core</name>
+    <description>通用响应体、异常、常量、工具类（纯 POJO，不依赖任何 Spring Boot Starter）</description>
+
+    <!--
+        设计原则：
+        1. 本模块是最底层的公共库，禁止引入任何 spring-boot-starter-* 应用级依赖
+        2. 只依赖语言级 / 工具库，让任何类型的服务（Web / Reactive / Job / 纯 CLI）都能复用
+        3. 所有依赖不写 version，由父 POM 的 spring-boot-dependencies BOM 统一管理
+    -->
+    <dependencies>
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Hutool -->
+        <dependency>
+            <groupId>cn.hutool</groupId>
+            <artifactId>hutool-all</artifactId>
+        </dependency>
+
+        <!-- Jackson 序列化 -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+        </dependency>
+
+        <!-- Bean Validation 规范 API：DTO 字段上的 @NotBlank / @Size 等注解来源，实现由业务服务引入 hibernate-validator 提供 -->
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+    </dependencies>
+</project>

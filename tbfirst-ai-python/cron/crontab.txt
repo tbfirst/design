@@ -1,0 +1,10 @@
+# V6.M2.D.6: cron schedule for L3/L4 decay tasks.
+# 容器内 (cron-runner sidecar) WORKDIR = /app；ai-python venv python 在 PATH。
+# 日志写到容器 /var/log/，logging driver json-file 不收（cron 进程独立 stdout 太散）。
+# 这两条规则的"调度真相源"是本文件；compose 里的 shell-loop sidecar 复刻同一时刻，
+# RedisLock 保证多实例下只一个生效。
+#
+# 字段：minute hour day-of-month month day-of-week command
+#
+0 3 * * *   cd /app && python -m scripts.decay_l3 >> /var/log/decay_l3.log 2>&1
+0 4 1 * *   cd /app && python -m scripts.decay_l4 >> /var/log/decay_l4.log 2>&1

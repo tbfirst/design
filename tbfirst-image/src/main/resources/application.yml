@@ -1,0 +1,190 @@
+server:
+  port: 8102
+  max-http-request-header-size: 64KB
+  # AI 生图单次耗时可能在 60s+，放开 Tomcat 连接空闲超时，避免中间代理/容器层先断连
+  # V5.XII.7：bump 至 600s，与 common-feign 全局 Request.Options 600s + gateway 620s 保持链路一致
+  tomcat:
+    connection-timeout: 600000
+    keep-alive-timeout: 600000
+
+# Swagger UI 配置：必须用相对路径，否则走网关 :8000/tbfirst-image/swagger-ui/...
+# 时 UI 会用绝对路径 /v3/api-docs/swagger-config 请求 → 网关找不到路由 404。
+# 相对路径在 swagger-ui/index.html 当前 URL 下会被浏览器解析为：
+#   网关入口：/tbfirst-image/v3/api-docs/swagger-config（命中 discovery.locator 自动路由）
+#   直连入口：/v3/api-docs/swagger-config（命中下游 SpringDoc 自动端点）
+springdoc:
+  swagger-ui:
+    config-url: ../v3/api-docs/swagger-config
+    url: ../v3/api-docs
+
+# 旧式 Feign 超时 key，兜底 spring.cloud.openfeign 路径在部分 Spring Cloud 版本下不生效的场景
+# V5.XII.7：实际 effective timeout 由 tbfirst-common-feign 全局 Request.Options Bean 决定（已 bump 至 600s）；
+# 本 yml 600s 仅为 lb:// 模式 Feign 客户端兜底与文档一致性。AiPythonClient 是 URL 模式不读 yml，看 Bean。
+feign:
+  client:
+    config:
+      default:
+        connect-timeout: 10000
+        read-timeout: 600000
+      tbfirst-ai-python:
+        connect-timeout: 10000
+        read-timeout: 600000
+  httpclient:
+    connection-timeout: 10000
+
+spring:
+  application:
+    name: tbfirst-image
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  # 引入公共配置
+  config:
+    # 多份共享 dataId：公共配置 + MyBatis 公共段（统一治理，见 infra/nacos/）
+    import:
+      - "optional:nacos:tbfirst-common.yaml?group=DEFAULT_GROUP&namespace=${NACOS_NS:dev}"
+      - "optional:nacos:tbfirst-mybatis.yaml?group=DEFAULT_GROUP&namespace=${NACOS_NS:dev}"
+  cloud:
+    # Nacos 配置
+    nacos:
+      server-addr: ${NACOS_ADDR:localhost:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        namespace: ${NACOS_NS:dev}
+      config:
+        namespace: ${NACOS_NS:dev}
+        file-extension: yaml
+    # Feign 配置，Feign就是一个 HTTP 客户端，用于调用其他服务
+    # 注意：Spring Cloud 2022+ 使用 spring.cloud.openfeign，旧版使用 feign.client。
+    # V5.XII.7：URL 模式 Feign Client（如 AiPythonClient @FeignClient(url=...) 非空）在 Spring Cloud
+    # OpenFeign 4.x 不读本 yml，实际 effective timeout 由 tbfirst-common-feign 全局 Request.Options Bean
+    # 决定（已同步 bump 至 600s）。本 yml 600s 仅作 lb:// 模式兜底 + 文档一致性，
+    # 与 gateway 620s response-timeout 配套（Phase1/Phase2 实测最长 ~500s + buffer）。
+    openfeign:
+      client:
+        config:
+          default:
+            connect-timeout: 10000
+            read-timeout: 600000
+          tbfirst-ai-python:
+            connect-timeout: 10000
+            read-timeout: 600000
+  # 数据源配置
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:tbfirstdatabase}?currentSchema=image
+    username: ${DB_USER:user1}
+    password: ${DB_PASSWORD:123456}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # P1 生图异步化后：AI 调用搬到 imageGenExecutor 线程池执行，DB 只在
+      # "INSERT pending / UPDATE success|failed / 查询" 几段短事务里短暂占连接，
+      # 不再有"长事务 × 并发 → 连接耗尽"，故从临时的 50 收回到 15（单库 PG
+      # max_connections=100，多服务共用，避免单服务独占半数连接）。
+      maximum-pool-size: 15
+      minimum-idle: 5
+      connection-timeout: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
+      keepalive-time: 60000
+  # Flyway 配置
+  flyway:
+    enabled: true
+    schemas: image
+    default-schema: image
+    locations: classpath:db/migration
+    # asset schema 的表由 init.sql 创建，不纳入 Flyway 管理
+    # 当迁移发现非空数据库且没有历史表时，自动执行 baseline 初始化
+    baseline-on-migrate: true
+    # 注意：Spring Boot 3.5 的 FlywayProperties 没有 repair-on-migrate 字段，
+    # checksum mismatch 的处理改由 FlywayConfig.flywayMigrationStrategy Bean 承担（repair → migrate）。
+  # Redis 配置
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+  # 文件上传配置
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+# MyBatis-Plus 配置
+mybatis-plus:
+  # 公共项（mapper-locations / configuration / global-config）已下沉至 Nacos: tbfirst-mybatis.yaml
+  type-aliases-package: com.tbfirst.image.entity
+
+# 应用配置
+app:
+  # JWT 配置
+  jwt:
+    secret: ${JWT_SECRET:oumUxneCYI3+bJVH3PnaVyxhXrVCjUMbu8zb9kO1hUU=}
+    expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+  # 上传文件配置（v3 S1 起 app.uploads.path 仍保留，但建议读 app.storage.local.path）
+  uploads:
+    path: ${UPLOADS_PATH:E:/tbfirst/testpicture}
+  # 存储后端配置（v3 S1 引入；详见 cloud_plan.md § 6.3）
+  storage:
+    # 后端选择：local（默认）| gcs（S2 实施后启用）
+    provider: ${STORAGE_PROVIDER:local}
+    local:
+      # 本地磁盘根目录；与 app.uploads.path 共享同一个 UPLOADS_PATH 环境变量
+      path: ${UPLOADS_PATH:E:/tbfirst/testpicture}
+    gcs:
+      # 以下字段 v3 S1 未启用，留作 S2 GoogleCloudStorageService 装配时消费
+      project-id: ${GCS_PROJECT_ID:}
+      bucket: ${GCS_BUCKET:tbfirst-bucket-01}
+      credentials-location: ${GOOGLE_APPLICATION_CREDENTIALS:}
+      # URL 模式枚举：public（公开桶直链）| presigned（V4 签名 URL，含 TTL）
+      # | cdn（Cloud CDN 自定义域名）| proxy（经 tbfirst-image /img/** 反代，员工不翻墙）
+      # 生产默认 proxy；本地开发可覆盖为 presigned
+      url-mode: ${GCS_URL_MODE:proxy}
+      # presigned URL 有效期。15min 在调试场景容易过期 → 前端缓存的 URL 失效；
+      # 通过环境变量覆盖，生产建议至少 PT2H，最长 7 天（GCS V4 上限）。
+      signed-url-ttl: ${GCS_SIGNED_URL_TTL:PT24H}
+      cdn-domain: ${GCS_CDN_DOMAIN:}
+      proxy:
+        # 反代根 URL，形如 https://yourdomain.com（不带尾 /），仅 url-mode=proxy 时使用
+        base-url: ${GCS_PROXY_BASE_URL:}
+  # Python AI 服务直连地址（配置后不走 Nacos 发现）
+  ai-python:
+    url: ${AI_PYTHON_URL:http://localhost:8200}
+
+logging:
+  level:
+    com.tbfirst: DEBUG
+    # V5.XV.11: 关 MyBatis-Plus SQL Parameters 日志。
+    # log-impl=Slf4jImpl 下 mapper 接口的 DEBUG logger 会把 SQL 绑定参数（含 PG bytea/字符
+    # 列的完整字符串值）原样打印 —— 当 persistImages GCS 失败退回 data URI 写入 asset_urls
+    # 时，几 MB base64 会被吐到日志里。业务故障可看 service/controller 的 INFO/WARN，无需
+    # mapper 层的 SQL trace 噪音。
+    com.tbfirst.image.mapper: INFO
+    com.tbfirst.auth.mapper: INFO
+
+# 韧性：ai-python 生图调用熔断（见 ImageGenerateServiceImpl.runGenerateJob）。
+# 异步化后 AI 调用在 imageGenExecutor 线程执行；熔断的价值是 ai-python 持续不可用时快速失败，
+# 避免每个任务白占线程等满 600s Feign 超时。用原生 registry.executeSupplier，只套熔断不加时限。
+resilience4j:
+  circuitbreaker:
+    instances:
+      ai-python-generate:
+        register-health-indicator: true
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5          # 至少 5 次调用才开始算失败率
+        failure-rate-threshold: 50          # 失败率 ≥50% → OPEN
+        wait-duration-in-open-state: 30s    # OPEN 后 30s 进 HALF_OPEN 试探
+        permitted-number-of-calls-in-half-open-state: 3
+        slow-call-duration-threshold: 120s  # 单次 >120s 视为慢调用，计入失败
+        slow-call-rate-threshold: 80
+
+# Actuator：暴露 health/info 端点（含 GCS 健康子项 /actuator/health/gcs）
+# show-details: always 让 health 输出 components 详情，便于排查 GCS 鉴权 / 桶可达性问题。
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+      show-components: always

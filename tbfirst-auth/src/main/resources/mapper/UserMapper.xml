@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<!--
+    UserMapper — 对应 auth.sys_user 表。
+    仅包含 "邮箱大小写不敏感" 的两个查询；其余 CRUD 由 MP BaseMapper 提供。
+    注意：显式写 `deleted = 0` 是为了避免 @TableLogic 与 XML 同时拼条件造成歧义。
+-->
+<mapper namespace="com.tbfirst.auth.mapper.UserMapper">
+
+    <resultMap id="userResultMap" type="com.tbfirst.auth.entity.User">
+        <id property="id" column="id"/>
+        <result property="username" column="username"/>
+        <result property="passwordHash" column="password_hash"/>
+        <result property="nickname" column="nickname"/>
+        <result property="email" column="email"/>
+        <result property="roles" column="roles"/>
+        <result property="status" column="status"/>
+        <result property="lastActiveAt" column="last_active_at"/>
+        <result property="groupId" column="group_id"/>
+        <result property="groupRole" column="group_role"/>
+        <result property="personalModelCap" column="personal_model_cap"/>
+        <result property="createTime" column="create_time"/>
+        <result property="updateTime" column="update_time"/>
+        <result property="createBy" column="create_by"/>
+        <result property="updateBy" column="update_by"/>
+        <result property="deleted" column="deleted"/>
+    </resultMap>
+
+    <!--
+        findByEmailIgnoreCaseAndNotDeleted
+        业务：登录 / 组长按 email 邀请时，用 email 换用户对象。
+        索引：对应 V3 的 partial unique index ux_sys_user_email_active
+              (LOWER(email)) WHERE deleted = 0 —— 保证 LOWER() 走索引。
+        返回：0 或 1 行（partial unique 保证）。
+    -->
+    <select id="findByEmailIgnoreCaseAndNotDeleted" resultMap="userResultMap">
+        SELECT * FROM auth.sys_user
+        WHERE LOWER(email) = LOWER(#{email}) AND deleted = 0
+        LIMIT 1
+    </select>
+
+    <!--
+        existsByEmailIgnoreCaseAndNotDeleted
+        业务：注册 / admin createUser 判断邮箱是否已被未软删账号占用。
+        性能：用 SELECT EXISTS 而非 COUNT(*)，索引命中即返回，不扫全表。
+    -->
+    <select id="existsByEmailIgnoreCaseAndNotDeleted" resultType="boolean">
+        SELECT EXISTS(
+            SELECT 1 FROM auth.sys_user WHERE LOWER(email) = LOWER(#{email}) AND deleted = 0
+        )
+    </select>
+
+</mapper>

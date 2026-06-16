@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 引入父依赖 ———— tbfirst-common（该依赖又引入顶级父依赖 ———— tbfirst-parent） -->
+    <parent>
+        <groupId>com.tbfirst</groupId>
+        <artifactId>tbfirst-common</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tbfirst-common-redis</artifactId>
+    <name>tbfirst-common-redis</name>
+    <description>Redis 序列化配置、Redisson 分布式锁、Key 规范</description>
+
+    <!--
+        设计原则：
+        1. 引入 redisson-spring-boot-starter，由 Redisson 自动接管 ConnectionFactory
+        2. 业务服务的 spring-boot-starter-data-redis 与 Redisson starter 兼容共存（Redisson 优先级更高）
+        3. 条件装配 @ConditionalOnClass({RedisConnectionFactory, RedissonClient}) 保证 Gateway 等未用 Redis 的服务不会误触发
+    -->
+    <dependencies>
+        <!-- tbfirst 内部：常量 / Key 规范 -->
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-core</artifactId>
+        </dependency>
+
+        <!-- Spring Boot 自动装配 API：提供 @AutoConfiguration / @ConditionalOnClass -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+
+        <!-- Redisson Spring Boot starter：拖入 spring-data-redis + spring-boot-starter-data-redis，
+             并自动注册 RedissonConnectionFactory 替代 Lettuce/Jedis 默认实现；
+             同时提供 RedissonClient Bean 供 RedisLock 使用 -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson-spring-boot-starter</artifactId>
+        </dependency>
+
+        <!-- Jackson Databind：RedisTemplate 的 JSON 序列化器依赖（Redisson 也用，但显式声明更清晰） -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- Caffeine：本地二级缓存选型（可选），业务若只用 Redis 不会实际加载 -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+</project>

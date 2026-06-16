@@ -1,0 +1,86 @@
+server:
+  port: 8101
+
+# Swagger UI 配置：必须用相对路径，否则走网关 :8000/tbfirst-auth/swagger-ui/...
+# 时 UI 会用绝对路径 /v3/api-docs/swagger-config 请求 → 网关找不到路由 404。
+# 相对路径在 swagger-ui/index.html 当前 URL 下会被浏览器解析为：
+#   网关入口：/tbfirst-auth/v3/api-docs/swagger-config（命中 discovery.locator 自动路由）
+#   直连入口：/v3/api-docs/swagger-config（命中下游 SpringDoc 自动端点）
+springdoc:
+  swagger-ui:
+    config-url: ../v3/api-docs/swagger-config
+    url: ../v3/api-docs
+
+spring:
+  application:
+    name: tbfirst-auth
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+  config:
+    # 多份共享 dataId：公共配置 + MyBatis 公共段（统一治理，见 infra/nacos/）
+    import:
+      - "optional:nacos:tbfirst-common.yaml?group=DEFAULT_GROUP&namespace=${NACOS_NS:dev}"
+      - "optional:nacos:tbfirst-mybatis.yaml?group=DEFAULT_GROUP&namespace=${NACOS_NS:dev}"
+  cloud:
+    nacos:
+      server-addr: ${NACOS_ADDR:localhost:8848}
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+      discovery:
+        # 显式写 server-addr，避免部分 Spring Cloud Alibaba 版本不继承 nacos.server-addr
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        namespace: ${NACOS_NS:dev}
+        # 开启注册，默认 true，显式写避免被共享配置覆盖
+        register-enabled: true
+        # 临时实例：Nacos 2.x 默认临时走 gRPC，持久化走 HTTP；临时更轻量
+        ephemeral: true
+      config:
+        server-addr: ${NACOS_ADDR:localhost:8848}
+        namespace: ${NACOS_NS:dev}
+        file-extension: yaml
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:tbfirstdatabase}?currentSchema=auth
+    username: ${DB_USER:user1}
+    password: ${DB_PASSWORD:123456}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+  flyway:
+    enabled: true
+    schemas: auth
+    default-schema: auth
+    locations: classpath:db/migration
+    # 既有 auth.sys_user 表由 infra/postgres/init.sql 提前建好；
+    # baseline-on-migrate 让 Flyway 把当前库视为 V0 基线，只跑 V1+ 的迁移
+    baseline-on-migrate: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+
+mybatis-plus:
+  # 公共项（mapper-locations / configuration / global-config）已下沉至 Nacos: tbfirst-mybatis.yaml
+  type-aliases-package: com.tbfirst.auth.entity
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:oumUxneCYI3+bJVH3PnaVyxhXrVCjUMbu8zb9kO1hUU=}
+    expiration-ms: ${JWT_EXPIRATION_MS:86400000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # 暴露 /actuator/health、nacosdiscovery 等端点，便于排查服务注册状态
+        include: health,info,nacosdiscovery
+  endpoint:
+    health:
+      show-details: always
+
+logging:
+  level:
+    com.tbfirst: DEBUG
+    # 打开 Nacos discovery 源码日志，卡在哪一步一目了然
+    com.alibaba.cloud.nacos: DEBUG
+    com.alibaba.nacos: INFO
+    org.springframework.cloud.client.discovery: DEBUG

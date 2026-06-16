@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 引入父依赖 ———— tbfirst-common（该依赖又引入顶级父依赖 ———— tbfirst-parent） -->
+    <parent>
+        <groupId>com.tbfirst</groupId>
+        <artifactId>tbfirst-common</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>tbfirst-common-feign</artifactId>
+    <name>tbfirst-common-feign</name>
+    <description>Feign 默认配置 / TraceId 透传 / 内网 Token 注入（不依赖 starter-openfeign）</description>
+
+    <!--
+        设计原则：
+        1. 业务服务自己引 spring-cloud-starter-openfeign + spring-cloud-starter-loadbalancer
+        2. 本模块只提供通用的 RequestInterceptor / 超时配置 Bean
+        3. 条件装配 @ConditionalOnClass(feign.Feign.class)
+    -->
+    <dependencies>
+        <!-- tbfirst 内部 -->
+        <dependency>
+            <groupId>com.tbfirst</groupId>
+            <artifactId>tbfirst-common-core</artifactId>
+        </dependency>
+
+        <!-- Spring Boot 自动装配 API -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+
+        <!-- Feign 核心：Feign.Builder / Logger / Request.Options / RequestInterceptor -->
+        <dependency>
+            <groupId>io.github.openfeign</groupId>
+            <artifactId>feign-core</artifactId>
+        </dependency>
+
+        <!-- SLF4J API：RequestInterceptor 里用 MDC 透传 TraceId -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+    </dependencies>
+</project>

@@ -1,0 +1,390 @@
+  docker-compose.infra.yml# ====================================================================
+# tbfirst 生产部署 docker-compose
+# 目标：办公室迷你主机（8C16T / 1TB SSD / Ubuntu 24.04）+ Cloudflare Tunnel
+# ====================================================================
+#
+#
+# 改造后的最终形态：
+#   1. 7 个服务：postgres / redis / nacos / ai-python / gateway / auth / image
+#      + cloudflared（M2.2 新增 Cloudflare Tunnel 出口容器）
+#      （骨架 modellink / realshow / adimage 已删除；cinestitch（分镜）已迁入）
+#   2. 数据卷：bind mount 到 /data/tbfirst/{pg,redis,nacos}（M1.2-M1.4）
+#      宿主机层 rsync/tar 即可备份，named volume 抓不到
+#   3. 端口绑定：所有服务 127.0.0.1 only；唯一外部入口是 cloudflared 出方向
+#      连 CF 边缘（无公网端口暴露 → 无需备案、无需开端口转发）
+#   4. GCS URL 模式：proxy（员工经迷你主机 /img/{key} 反代访问 GCS，
+#      不直发 storage.googleapis.com）；URL 永不过期，无需 RefreshableImage 重拉
+#   5. PG 备份：每日 03:00 cron 经 pg_backup.sh dump 到 GCS tbfirst-backup 桶
+#      （M4.1-M4.3 + cloud_plan.md 附录 D 阶段 6）
+#   6. 时区：所有服务 environment 加 TZ: Asia/Shanghai（M6.4）
+#   7. resources/logs/restart 等运行时配置保留（与 GCP VM 方案通用）
+#
+# 启动顺序（首次部署 runbook 见 cloud_plan.md 附录 D 阶段 4）：
+#   sudo bash infra/scripts/init_host_dirs.sh        # 建 /data/tbfirst/* (M1.1)
+#   sudo cp gcs-sa.json /data/tbfirst/secrets/        # 投递 GCP 凭证
+#   docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+#
+# 旧 GCP VM 方案参考：README.prod.md（保留作为备选，不再是默认路径）
+# ====================================================================
+
+services:
+
+  # ---------------------------- 基础设施层 ----------------------------
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: tbfirst-postgres-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      TZ: Asia/Shanghai
+    # 仅 127.0.0.1 暴露：VM 外部无法直接连，但同 VM 上的容器仍可走 docker 内网
+    ports: ["127.0.0.1:5432:5432"]
+    volumes:
+      # bind mount 到宿主机 /data/tbfirst/pg：rsync/tar 备份抓得到，named volume 抓不到
+      # 首次启动前必须先跑 infra/scripts/init_host_dirs.sh 建好目录
+      - /data/tbfirst/pg:/var/lib/postgresql/data
+      # init.sql 仅在首次启动且数据目录为空时执行
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits: { memory: 1G }
+        reservations: { memory: 512M }
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "10" }
+
+  redis:
+    image: redis:7-alpine
+    container_name: tbfirst-redis-prod
+    restart: unless-stopped
+    # 持久化 + AOF（启动 1s flush）；生产建议同时开 RDB 快照
+    command: ["redis-server", "--appendonly", "yes", "--save", "900", "1"]
+    environment:
+      TZ: Asia/Shanghai
+    ports: ["127.0.0.1:6379:6379"]
+    volumes:
+      # bind mount 到宿主机 /data/tbfirst/redis：AOF/RDB 文件可被宿主层 rsync/tar 直接抓走
+      - /data/tbfirst/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits: { memory: 512M }
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  nacos:
+    image: nacos/nacos-server:v3.1.1
+    container_name: tbfirst-nacos-prod
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      MODE: standalone
+      NACOS_AUTH_ENABLE: "true"
+      # ⚠️ 生产强烈建议把这两个值改掉（与代码仓库示例不同），并通过 .env.prod 注入
+      NACOS_AUTH_TOKEN: ${NACOS_AUTH_TOKEN}
+      NACOS_AUTH_IDENTITY_KEY: ${NACOS_AUTH_IDENTITY_KEY:-tbfirst}
+      NACOS_AUTH_IDENTITY_VALUE: ${NACOS_AUTH_IDENTITY_VALUE:-tbfirst}
+      JVM_XMS: 512m
+      JVM_XMX: 512m
+      # 内嵌 Derby（standalone 默认）。流量更大时改为外置 Cloud SQL（详见 README.prod.md § 备份策略）
+    # Nacos Console (8080) 仅 127.0.0.1，运维需要时在 VM 内 ssh -L 8080:127.0.0.1:8080 跳过去
+    ports:
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:8848:8848"
+      - "127.0.0.1:9848:9848"
+      - "127.0.0.1:9849:9849"
+    volumes:
+      # bind mount 到 /data/tbfirst/nacos/{data,logs}：内嵌 Derby + 配置历史一并落到宿主层
+      - /data/tbfirst/nacos/data:/home/nacos/data
+      - /data/tbfirst/nacos/logs:/home/nacos/logs
+    deploy:
+      resources:
+        limits: { memory: 1G }
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  # ---------------------------- 应用层 ----------------------------
+
+  ai-python:
+    build: ./tbfirst-ai-python
+    container_name: tbfirst-ai-python-prod
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      TZ: Asia/Shanghai
+      APP_PORT: 8200
+      NACOS_ADDR: nacos:8848
+      REDIS_HOST: redis
+      DB_HOST: postgres
+      # image_uri.py 拉取参考图时走内部 image 服务 proxy（而非 localhost:8102 默认值）
+      IMAGE_REF_BASE_URL: http://image:8102
+    volumes:
+      # Vertex AI 服务账号凭据（只读），路径须与 .env.prod GOOGLE_APPLICATION_CREDENTIALS 一致
+      - /opt/tbfirst/secrets/vertex_key.json:/secrets/vertex_key.json:ro
+    # 仅暴露给 VM 内（gateway/image 容器走 docker 网络）
+    ports: ["127.0.0.1:8200:8200"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+      nacos:    { condition: service_started }
+    deploy:
+      resources:
+        limits: { memory: 3G }   # V6.M2.A.13: bge-m3 单例 ~600MB + LangGraph + 现有 routes 缓冲
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "10" }
+
+  # V6.M2.D.6: cron-runner sidecar
+  # ai-python 镜像 + shell 循环（不装 cron，避免 Dockerfile 改动）。每小时唤醒一次，
+  # 按 cron/crontab.txt 的时刻规则触发 scripts.decay_l3 / decay_l4；多副本下 RedisLock
+  # 在 scripts/ 内部互斥保证只一个生效（详见 scripts/decay_l3.py 头注释）。
+  # 与 ai-python 共享同一 Python venv + .env.prod；不占外部端口、无 healthcheck（cron 性质）。
+  cron-runner:
+    build: ./tbfirst-ai-python
+    container_name: tbfirst-cron-runner-prod
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      TZ: Asia/Shanghai
+      REDIS_HOST: redis
+      DB_HOST: postgres
+    # 调度时刻见 tbfirst-ai-python/cron/crontab.txt（本文件是契约的唯一真相源）。
+    # 02:00 跑 etl_l5；03:00 跑 decay_l3；04:00 月 1 号跑 decay_l4。其他时段 sleep。
+    command: >
+      sh -c '
+        while true; do
+          H=$$(date +%H);
+          DM=$$(date +%d);
+          if [ "$$H" = "02" ]; then python -m scripts.etl_l5 || true; fi;
+          if [ "$$H" = "03" ]; then python -m scripts.decay_l3 || true; fi;
+          if [ "$$H" = "04" ] && [ "$$DM" = "01" ]; then python -m scripts.decay_l4 || true; fi;
+          sleep 3600;
+        done
+      '
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis:    { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { memory: 256M }
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  gateway:
+    build:
+      context: .
+      dockerfile: infra/docker/java.Dockerfile
+      args: { MODULE: tbfirst-gateway }
+    container_name: tbfirst-gateway-prod
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      TZ: Asia/Shanghai
+      NACOS_ADDR: nacos:8848
+      REDIS_HOST: redis
+      # 生产 Java 内存上限：4G VM 上 gateway/auth/image 各分一份；e2-standard-2 (8G) 充足
+      JAVA_TOOL_OPTIONS: "-Xms256m -Xmx512m"
+    # 迷你主机方案下，cloudflared 容器经 docker network 接入 gateway，
+    # 不需要把 8000 暴露到主机所有网卡，仅 loopback 即可（防误开公网）
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      nacos: { condition: service_started }
+      redis: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8000/actuator/health | grep -q UP"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    deploy:
+      resources:
+        limits: { memory: 768M }
+    logging:
+      driver: json-file
+      options: { max-size: "100m", max-file: "10" }
+
+  auth:
+    build:
+      context: .
+      dockerfile: infra/docker/java.Dockerfile
+      args: { MODULE: tbfirst-auth }
+    container_name: tbfirst-auth-prod
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      TZ: Asia/Shanghai
+      NACOS_ADDR: nacos:8848
+      DB_HOST: postgres
+      REDIS_HOST: redis
+      JAVA_TOOL_OPTIONS: "-Xms256m -Xmx512m"
+    # 不对外暴露：只能由 gateway 走 docker 网络访问
+    ports: ["127.0.0.1:8101:8101"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      nacos:    { condition: service_started }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8101/actuator/health | grep -q UP"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits: { memory: 768M }
+    logging:
+      driver: json-file
+      options: { max-size: "100m", max-file: "10" }
+
+  image:
+    build:
+      context: .
+      dockerfile: infra/docker/java.Dockerfile
+      args: { MODULE: tbfirst-image }
+    container_name: tbfirst-image-prod
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      TZ: Asia/Shanghai
+      NACOS_ADDR: nacos:8848
+      DB_HOST: postgres
+      REDIS_HOST: redis
+      # Feign 直连 AI-Python：走 docker 网络的服务名解析，跳过 Nacos
+      # （Nacos 注册稳定后可清空 AI_PYTHON_URL 回到 lb://tbfirst-ai-python）
+      AI_PYTHON_URL: http://ai-python:8200
+      # GCS 凭据：必须与下方 volume 挂载路径一致
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcs-sa.json
+      # 生图请求峰值内存：JVM 堆给 1G 留余地（10MB 图 base64 ≈ 30MB 字符串 + GCS SDK 缓冲）
+      JAVA_TOOL_OPTIONS: "-Xms512m -Xmx1024m"
+    ports: ["127.0.0.1:8102:8102"]
+    volumes:
+      # SA JSON 只读挂载（必须先 scp 到 VM 的这个路径，否则 image 启动后第一次调 GCS 会 403）
+      # 详见 README.prod.md § 4 投递 SA JSON
+      - ./secrets/gcs-sa.json:/secrets/gcs-sa.json:ro
+    depends_on:
+      postgres:  { condition: service_healthy }
+      ai-python: { condition: service_started }
+    healthcheck:
+      # 同时验证 actuator + GCS 连通性（StorageConfig#gcsHealthIndicator 已注册到 /actuator/health/gcs）
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8102/actuator/health | grep -q UP"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits: { memory: 1536M }
+    logging:
+      driver: json-file
+      options: { max-size: "100m", max-file: "20" }
+
+  cinestitch:
+    build:
+      context: .
+      dockerfile: infra/docker/java.Dockerfile
+      args: { MODULE: tbfirst-cinestitch }
+    container_name: tbfirst-cinestitch-prod
+    restart: unless-stopped
+    env_file: .env.prod
+    environment:
+      TZ: Asia/Shanghai
+      NACOS_ADDR: nacos:8848
+      DB_HOST: postgres
+      REDIS_HOST: redis
+      AI_PYTHON_URL: http://ai-python:8200
+      JAVA_TOOL_OPTIONS: "-Xms256m -Xmx512m"
+    ports: ["127.0.0.1:8105:8105"]
+    depends_on:
+      postgres:  { condition: service_healthy }
+      nacos:     { condition: service_started }
+      ai-python: { condition: service_started }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8105/api/cinestitch/health | grep -q UP"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    deploy:
+      resources:
+        limits: { memory: 768M }
+    logging:
+      driver: json-file
+      options: { max-size: "50m", max-file: "10" }
+
+  # ---------------------------- 前端层 ----------------------------
+  # frontend(Nginx):承担两件事
+  #   1. 托管 tbfirst-frontend/dist 静态 SPA
+  #   2. 反代 /api、/static、/img 到 gateway:8000(同 docker network)
+  # dist 来源:本地 npm run build 后 scp 到宿主机 /opt/tbfirst/tbfirst-frontend/dist
+  # 配置文件来源:仓库内 ./infra/nginx/tbfirst.conf
+  frontend:
+    image: nginx:alpine
+    container_name: tbfirst-frontend-prod
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      # SPA 产物:bind mount,scp 覆盖文件即生效,无需 docker 操作
+      # 若 dist 目录不存在,容器会 404;首次部署前务必先 scp 上去
+      - ./tbfirst-frontend/dist:/usr/share/nginx/html:ro
+      # Nginx 配置:bind mount,改完 docker exec ... nginx -s reload 即生效
+      - ./infra/nginx/tbfirst.conf:/etc/nginx/conf.d/default.conf:ro
+    ports: ["127.0.0.1:8090:80"]
+    depends_on:
+      gateway: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost/index.html || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits: { memory: 128M }
+        reservations: { memory: 32M }
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+  # ---------------------------- 出口隧道 ----------------------------
+  # cloudflared：唯一外部入口。出方向连 CF 边缘 → CF 边缘按 Public Hostname 路由
+  # 回到 docker network 里的 gateway:8000，无需开公网端口、无需备案、自动 HTTPS。
+  # Token 模式：ingress 路由全部在 CF Zero Trust 控制台 Public Hostname 配，
+  # 本地无 ingress.yml；详见 infra/cloudflared/README.md（M2.4）。
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: tbfirst-cloudflared-prod
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+      TZ: Asia/Shanghai
+    depends_on:
+      frontend:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits: { memory: 256M }
+    logging:
+      driver: json-file
+      options: { max-size: "20m", max-file: "5" }
+
+# ====================================================================
+# 持久化卷：全部 bind mount 到 /data/tbfirst/{pg,redis,nacos/data,nacos/logs}
+# 见各服务 volumes: 段；首次启动前先跑 infra/scripts/init_host_dirs.sh 建好目录树。
+# 备份策略：宿主机层 rsync/tar 直接抓 /data/tbfirst。
+# ====================================================================

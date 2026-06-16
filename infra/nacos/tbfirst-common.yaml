@@ -1,0 +1,57 @@
+# 所有服务共享的默认配置（在 Nacos 控制台创建同名 DataId，复制本文件内容）
+# Data ID: tbfirst-common.yaml
+# Group:   DEFAULT_GROUP
+# Namespace: dev
+
+app:
+  jwt:
+    secret: oumUxneCYI3+bJVH3PnaVyxhXrVCjUMbu8zb9kO1hUU=    # JWT 密钥，建议使用随机生成的字符串
+    expiration-ms: 86400000                                 # JWT 过期时间，单位毫秒（这里设置为 24 小时）
+  internal-token: tbfirst-internal                           # 内部服务间通信的共享令牌，建议使用随机生成的字符串
+  # CORS 白名单：禁止使用 "*" 通配符，上线时由 Nacos console 把占位符替换为真实域名
+  # 多域名用逗号分隔，例如：https://yourdomain.com,https://admin.yourdomain.com
+  cors:
+    allowed-origins: https://yourdomain.com
+
+# 全服务统一优雅停机：收到 SIGTERM 后先停止接收新请求，给在途请求（含 600s 生图）
+# 最多 timeout-per-shutdown-phase 的时间收尾，再退出，避免硬打断（即此前反复出现的
+# nacos-client DefaultPublisher InterruptedException 关闭噪音）。容器侧需配 stop_grace_period。
+server:
+  shutdown: graceful
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+# ── 鉴权白名单（两层集中维护，需对齐）─────────────────────────────────────────
+# gateway-whitelist：网关层 AuthGlobalFilter 放行的外部路径前缀（不带 JWT 可访问）。
+# service-exempt-prefixes：服务层 UserContextFilter 缺 X-User-Id 仍放行的 /api 业务路径前缀。
+# 两层路径形态/匹配语义不同（网关=外部路径；服务=/api 前缀），故不合并为一份；改动须两边一起评估。
+# 结构性规则不在此列、固定在代码：/internal/（服务间调用，contains 匹配）、
+# swagger 动态前缀（/v3/api-docs | /swagger-ui | /webjars，网关侧 contains）。
+# 缺失时各 filter 回落到代码内置默认（保证 Nacos 不可用时既不全锁死也不全放行）。
+tbfirst:
+  security:
+    gateway-whitelist: /api/auth/login,/api/auth/register,/api/auth/refresh,/actuator/health,/static/,/img/,/v3/api-docs,/swagger-ui,/webjars,/favicon.ico
+    service-exempt-prefixes: /api/auth/login,/api/auth/register,/api/auth/refresh,/api/actuator/,/api/v3/api-docs,/api/doc.html,/api/webjars/,/api/swagger-resources
+
+management:      # Spring Boot Actuator 配置
+  endpoints:     # 暴露的 Actuator 端点，生产环境建议只暴露必要的端点
+    web:         # Web 端点配置
+      exposure:
+        include: health,info,metrics,prometheus   # 只暴露健康检查、应用信息、指标和 Prometheus 端点
+  endpoint:
+    health:
+      show-details: always               # 健康检查详情，生产环境建议设置为 "never" 或 "when-authorized"
+      probes:
+        enabled: true                    # 暴露 /actuator/health/liveness 与 /readiness（供容器/编排器探针使用）
+
+logging:      # 日志级别配置
+  level:
+    root: INFO
+    com.tbfirst: DEBUG
+    # V5.XV.11: 全局压制 mapper 层 SQL Parameters 噪音（com.tbfirst.<svc>.mapper 包统一 INFO）。
+    # 各服务可在自家 yml 进一步细化。MyBatis-Plus log-impl=Slf4jImpl 把 SQL 绑定参数当字符
+    # 串原样打印，写入大字段（如 asset_urls fallback 为 base64 data URI 时）会日志爆炸。
+    com.tbfirst.image.mapper: INFO
+    com.tbfirst.auth.mapper: INFO
+    com.tbfirst.cinestitch.mapper: INFO

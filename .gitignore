@@ -1,0 +1,59 @@
+### Maven ###
+target/
+*.jar
+!**/src/main/resources/**/*.jar
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+
+### IntelliJ ###
+.idea/
+*.iml
+*.iws
+out/
+
+### VSCode ###
+.vscode/
+
+### Logs ###
+logs/
+*.log
+
+### Env ###
+.env
+.env.local
+
+### Secrets / 凭据（必须先于任何 git add 生效，否则私钥可能进入 Git 历史） ###
+# GCS Service Account JSON / 任何下载的密钥都放这里
+secrets/
+*.json.bak
+
+### Python ###
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+### L1 压缩落盘缓存（大 ToolMessage 转存磁盘，体积大且可重生，不入 git）###
+.cache/
+
+### Data ###
+data/
+pgdata/
+nacos-data/
+
+### Ralph 备份（历史 Sprint 上下文，体积大，不入 git）###
+ralph_bak/
+
+### Ralph ###
+.ralph/
+
+### Claude ###
+.claude/
+
+### mymd ###
+interview/

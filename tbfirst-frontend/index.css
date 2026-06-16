@@ -1,0 +1,116 @@
+
+@import "tailwindcss";
+
+@theme {
+  /* ── Accent: indigo-500 anchor, violet-500 alt ── */
+  --color-accent: #6366f1;
+  --color-accent-light: #eef2ff;
+  --color-accent-muted: #e0e7ff;
+  --color-accent-dark: #4f46e5;
+  --color-accent-alt: #8b5cf6;
+
+  /* ── Surface layers ── */
+  --color-surface: #ffffff;
+  --color-surface-muted: #fafafa;
+  --color-canvas: #f7f7f8;
+
+  /* ── Border ── */
+  --color-border: #e5e5e7;
+  --color-border-muted: #f0f0f0;
+
+  /* ── Danger (rose) ── */
+  --color-danger: #f43f5e;
+  --color-danger-light: #fff1f2;
+  --color-danger-dark: #e11d48;
+
+  /* ── Text scale ── */
+  --color-text-base: #111827;
+  --color-text-muted: #6b7280;
+  --color-text-faint: #9ca3af;
+}
+
+@layer base {
+  body {
+    @apply bg-gray-50 text-slate-800 antialiased;
+  }
+}
+
+@layer utilities {
+  .animate-in {
+    animation-duration: 300ms;
+    animation-fill-mode: forwards;
+    animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  /* ── existing ── */
+  .slide-in-from-bottom-4 {
+    animation-name: slide-in-from-bottom;
+  }
+
+  /* ── Sprint V6.M3.UI additions ── */
+  .slide-in-from-right-4 {
+    animation-name: slide-in-from-right;
+  }
+
+  .fade-in {
+    animation-name: fade-in;
+  }
+
+  .animate-caret-blink {
+    animation: caret-blink 0.8s step-start infinite;
+  }
+
+  @keyframes slide-in-from-bottom {
+    from { transform: translateY(1rem); opacity: 0; }
+    to   { transform: translateY(0);    opacity: 1; }
+  }
+
+  @keyframes slide-in-from-right {
+    from { transform: translateX(1rem); opacity: 0; }
+    to   { transform: translateX(0);    opacity: 1; }
+  }
+
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+  }
+
+  @keyframes caret-blink {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0; }
+  }
+}
+
+/* 全局底色：为固定层浮雕 canvas 提供基底，canvas 不渲染时（移动端）也能显示暖白底 */
+body {
+  background-color: #f0ede8;
+}
+
+/* ── /home 浮雕底面工具类（移动端静态回退底） ── */
+.home-relief-surface {
+  background-color: #f0ede8;
+  background-image:
+    /* 水平极细纹：模拟纸面/石膏横向纤维感 */
+    repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 3px,
+      rgba(155, 143, 127, 0.04) 3px,
+      rgba(155, 143, 127, 0.04) 4px
+    ),
+    /* 纵向极细纹：与横纹交叉形成细微网格颗粒感 */
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 4px,
+      rgba(155, 143, 127, 0.028) 4px,
+      rgba(155, 143, 127, 0.028) 5px
+    ),
+    /* 对角光源：模拟石膏/纸面左上角漫射光，营造温润质感 */
+    linear-gradient(
+      148deg,
+      rgba(255, 255, 255, 0.38) 0%,
+      rgba(240, 235, 226, 0.12) 48%,
+      rgba(210, 202, 190, 0.18) 100%
+    );
+}
