@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -117,10 +118,11 @@ class FakeConn:
 def _setup(monkeypatch) -> FakeStore:
     store = FakeStore()
 
-    async def fake_connect(dsn, row_factory=None):  # noqa: ARG001
-        return FakeConn(store)
+    @asynccontextmanager
+    async def fake_connection():
+        yield FakeConn(store)
 
-    monkeypatch.setattr(shared.psycopg.AsyncConnection, "connect", fake_connect)
+    monkeypatch.setattr(shared, "agent_db_connection", fake_connection)
     return store
 
 

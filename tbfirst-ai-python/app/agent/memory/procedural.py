@@ -4,27 +4,12 @@ from __future__ import annotations
 import logging
 from typing import Any, Optional, Sequence
 
-import psycopg
-from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
-from app.config import get_settings
+from app.db.pool import agent_db_connection
 from app.services.embedding import embed_text
 
 logger = logging.getLogger(__name__)
-
-_DSN: Optional[str] = None
-
-
-def _dsn() -> str:
-    global _DSN
-    if _DSN is None:
-        s = get_settings()
-        _DSN = (
-            f"postgresql://{s.db_user}:{s.db_password}@{s.db_host}:{s.db_port}/{s.db_name}"
-        )
-    return _DSN
-
 
 def _vec_literal(vec: Sequence[float]) -> str:
     return "[" + ",".join(f"{float(v):.6f}" for v in vec) + "]"
@@ -50,7 +35,7 @@ async def insert_workflow(
 ) -> int:
     vec = await embed_text(sample_prompt or name or "")
     vec_lit = _vec_literal(vec)
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -88,7 +73,7 @@ async def search_workflow(
     vec_lit = _vec_literal(query_embedding)
     groups = [int(g) for g in (group_ids or [])]
     fetch_k = int(k) * 4 if phase else int(k)
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -132,7 +117,7 @@ async def list_workflows(
     limit: int = 50,
 ) -> list[dict]:
     groups = [int(g) for g in (group_ids or [])]
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """

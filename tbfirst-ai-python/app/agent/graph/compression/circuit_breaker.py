@@ -1,56 +1,147 @@
-"""
-熔断与降级机制
+"""Time-driven circuit breakers used by optional Agent subsystems.
 
-部署说明：
-- 单 uvicorn worker（默认）：asyncio.Lock 保证同进程内多协程并发安全。
-- 多 worker 部署（--workers N）：每个 worker 进程有独立的 _registry 副本，
-  熔断状态不跨进程共享。多 worker 场景须使用 Redis 后端替换 _registry，
-  否则已熔断的 session 在另一 worker 仍可继续触发规划器/评估器。
+The breaker deliberately does not count failures. A dependency failure opens the
+circuit immediately, elapsed time moves it toward HALF_OPEN, and exactly one
+probe decides whether it closes or reopens with a longer cooldown.
+
+State is isolated per session and per capability. The in-process registry is
+bounded and thread-safe; deployments that need cross-worker breaker state should
+also protect shared upstreams at the gateway layer.
 """
 
 from __future__ import annotations
 
-import asyncio
+import contextvars
+import threading
+import time
+from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
 
 
-class _State(Enum):
-    CLOSED = "closed"       # 正常状态，允许操作
-    OPEN = "open"           # 熔断状态，拒绝操作以保护系统稳定性
+class CircuitState(str, Enum):
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
 
-# @dataclass 可自动重写 __init__、__repr__、__eq__ 等方法
+
+class CircuitOpenError(RuntimeError):
+    def __init__(self, retry_after_seconds: float, state: CircuitState):
+        self.retry_after_seconds = max(0.0, retry_after_seconds)
+        self.state = state
+        super().__init__(
+            f"circuit is {state.value}; retry after {self.retry_after_seconds:.2f}s"
+        )
+
+
 @dataclass
 class CircuitBreaker:
-    threshold: int = 3
-    # default：默认值，init=False：不包含在 __init__ 方法的参数中，repr=False：不包含在 __repr__ 方法的输出中
-    _failures: int = field(default=0, init=False, repr=False)
-    _state: _State = field(default=_State.CLOSED, init=False, repr=False)
+    cooldown_seconds: float = 15.0
+    max_cooldown_seconds: float = 120.0
+    clock: Callable[[], float] = field(default=time.monotonic, repr=False, compare=False)
+    _state: CircuitState = field(default=CircuitState.CLOSED, init=False, repr=False)
+    _opened_until: float = field(default=0.0, init=False, repr=False)
+    _active_cooldown: float = field(default=0.0, init=False, repr=False)
+    _generation: int = field(default=0, init=False, repr=False)
+    _permit: contextvars.ContextVar[tuple[int, bool] | None] = field(
+        default_factory=lambda: contextvars.ContextVar("circuit_permit", default=None),
+        init=False,
+        repr=False,
+    )
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
-    def fail(self) -> None:
-        self._failures += 1
-        # 当计数器达到 threshold（默认 3），状态从 CLOSED 翻转为 OPEN
-        if self._failures >= self.threshold:
-            self._state = _State.OPEN
+    def __post_init__(self) -> None:
+        if self.cooldown_seconds <= 0:
+            raise ValueError("cooldown_seconds must be positive")
+        if self.max_cooldown_seconds < self.cooldown_seconds:
+            raise ValueError("max_cooldown_seconds must be >= cooldown_seconds")
+        self._active_cooldown = self.cooldown_seconds
+
+    @property
+    def state(self) -> CircuitState:
+        with self._lock:
+            return self._state
+
+    @property
+    def retry_after_seconds(self) -> float:
+        with self._lock:
+            if self._state is CircuitState.CLOSED:
+                return 0.0
+            return max(0.0, self._opened_until - self.clock())
+
+    def available(self) -> bool:
+        """Return readiness without acquiring the HALF_OPEN probe."""
+        with self._lock:
+            if self._state is CircuitState.CLOSED:
+                return True
+            if self._state is CircuitState.OPEN:
+                return self.clock() >= self._opened_until
+            return False
 
     def check(self) -> None:
-        if self._state is _State.OPEN:
-            raise RuntimeError(
-                f"熔断器开启，当前已失败 {self._failures} 次，拒绝执行以保护系统稳定性"
-            )
+        """Acquire permission for one dependency call.
+
+        CLOSED requests pass. Once OPEN cooldown expires, the first caller owns
+        the HALF_OPEN probe and concurrent callers continue to fail fast.
+        """
+        with self._lock:
+            now = self.clock()
+            if self._state is CircuitState.CLOSED:
+                self._permit.set((self._generation, False))
+                return
+            if self._state is CircuitState.OPEN and now >= self._opened_until:
+                self._state = CircuitState.HALF_OPEN
+                self._permit.set((self._generation, True))
+                return
+            retry_after = max(0.0, self._opened_until - now)
+            raise CircuitOpenError(retry_after, self._state)
+
+    def fail(self) -> None:
+        """Open immediately; a failed probe applies bounded time backoff."""
+        permit = self._permit.get()
+        self._permit.set(None)
+        with self._lock:
+            if permit is not None and permit[0] != self._generation:
+                return
+            is_probe = permit[1] if permit is not None else self._state is CircuitState.HALF_OPEN
+            if self._state is CircuitState.OPEN:
+                return
+            if is_probe and self._state is CircuitState.HALF_OPEN:
+                self._active_cooldown = min(
+                    self.max_cooldown_seconds,
+                    max(self.cooldown_seconds, self._active_cooldown * 2),
+                )
+            elif self._state is CircuitState.CLOSED:
+                self._active_cooldown = self.cooldown_seconds
+            else:
+                return
+            self._state = CircuitState.OPEN
+            self._opened_until = self.clock() + self._active_cooldown
+            self._generation += 1
+
+    def succeed(self) -> None:
+        permit = self._permit.get()
+        self._permit.set(None)
+        with self._lock:
+            if permit is None or permit[0] != self._generation:
+                return
+            if permit[1] and self._state is CircuitState.HALF_OPEN:
+                self._close_locked()
 
     def reset(self) -> None:
-        self._failures = 0
-        self._state = _State.CLOSED
+        """Force the administrative/test state back to CLOSED."""
+        self._permit.set(None)
+        with self._lock:
+            self._close_locked()
+
+    def _close_locked(self) -> None:
+        self._state = CircuitState.CLOSED
+        self._opened_until = 0.0
+        self._active_cooldown = self.cooldown_seconds
+        self._generation += 1
 
 
-# 单个 session 的独立熔断器：
-#   - compress：压缩主流程（cascade_compress_node 整体）
-#   - tool：工具读回（read_cached_tool_result 从磁盘取回 L1 缓存）
-#   - dependency：外部依赖（L4 的 Gemini 摘要 + DB session 查询）
-#   - evaluator：Phase D Reflection 评估器（evaluate_image/evaluate_text_rubric）
-#   - planner：Phase D Plan-Solve 规划器（plan_node/replan_node）
-# 各类相互隔离：某一类连续失败熔断，不影响另外几类继续工作。
 @dataclass
 class BreakerSet:
     compress: CircuitBreaker = field(default_factory=CircuitBreaker)
@@ -60,59 +151,25 @@ class BreakerSet:
     planner: CircuitBreaker = field(default_factory=CircuitBreaker)
 
 
-# 熔断器按 session 维度隔离：避免某个会话的连续失败把全局压缩/工具/依赖一并熔断，
-# 拖垮所有并发用户（旧实现是模块级单例，一个坏会话会污染全服务）。
-_registry: dict[str, BreakerSet] = {}
-# 注册表软上限：超出后按插入顺序淘汰最旧的会话熔断器，防止长期运行内存泄漏（dict 保持插入序）。
+_registry: OrderedDict[str, BreakerSet] = OrderedDict()
 _MAX_SESSIONS = 1024
-# asyncio.Lock 保护 _registry 的 len-check → evict → assign 三步原子性，
-# 防止同进程多协程并发创建同一 session 的重复 BreakerSet（单 worker 场景）。
-_registry_lock: asyncio.Lock | None = None
-
-
-def _get_lock() -> asyncio.Lock:
-    global _registry_lock
-    if _registry_lock is None:
-        _registry_lock = asyncio.Lock()
-    return _registry_lock
+_registry_lock = threading.RLock()
 
 
 def get_breakers(session_key: str | None) -> BreakerSet:
-    """按 session_key（通常是 session_uuid）取该会话独立的三类熔断器集合，不存在则惰性创建。
-
-    线程安全：同步函数，使用无竞争的 dict.get + 二次检查模式；Lock 仅在需要写入时通过
-    get_breakers_async 异步获取。同步路径适用于绝大多数节点的直接调用场景。
-    """
+    """Return a bounded, LRU-refreshed breaker set for one Agent session."""
     key = session_key or "_default_"
-    bs = _registry.get(key)
-    if bs is not None:
-        return bs
-    # 快速路径未命中，直接写入（asyncio 单线程保证此处无真正并发，GIL 保护 dict 操作）
-    if len(_registry) >= _MAX_SESSIONS:
-        oldest = next(iter(_registry))
-        _registry.pop(oldest, None)
-    bs = BreakerSet()
-    _registry[key] = bs
-    return bs
+    with _registry_lock:
+        existing = _registry.pop(key, None)
+        if existing is not None:
+            _registry[key] = existing
+            return existing
+        if len(_registry) >= _MAX_SESSIONS:
+            _registry.popitem(last=False)
+        created = BreakerSet()
+        _registry[key] = created
+        return created
 
 
 async def get_breakers_async(session_key: str | None) -> BreakerSet:
-    """异步版本：通过 asyncio.Lock 保证 len-check → evict → assign 原子性。
-
-    在高并发场景（多协程同时首次访问同一 session_key）下替代 get_breakers 使用。
-    """
-    key = session_key or "_default_"
-    bs = _registry.get(key)
-    if bs is not None:
-        return bs
-    async with _get_lock():
-        # 二次检查：持锁后再查一次，防止等锁期间已被其他协程创建
-        bs = _registry.get(key)
-        if bs is not None:
-            return bs
-        if len(_registry) >= _MAX_SESSIONS:
-            oldest = next(iter(_registry))
-            _registry.pop(oldest, None)
-        bs = BreakerSet()
-        _registry[key] = bs
-    return bs
+    return get_breakers(session_key)

@@ -8,12 +8,22 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from langchain_core.messages import HumanMessage, ToolMessage  # noqa: E402
+import pytest  # noqa: E402
 
+from app.agent.graph.compression.circuit_breaker import get_breakers  # noqa: E402
 from app.agent.graph.nodes import execute_step, plan_node, replan_node  # noqa: E402
 
 
 def run(coro):
     return asyncio.run(coro)
+
+
+@pytest.fixture(autouse=True)
+def _reset_planner_breaker():
+    breaker = get_breakers("u" * 32).planner
+    breaker.reset()
+    yield
+    breaker.reset()
 
 
 def _base_state(**overrides) -> dict:

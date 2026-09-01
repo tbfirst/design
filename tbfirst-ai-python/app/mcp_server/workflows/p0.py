@@ -90,6 +90,7 @@ async def image_generate_phase(
         maximum=min(4, get_settings().tbfirst_mcp_max_images_per_call),
     )
     payload = {
+        "requestId": params.get("request_id") or params.get("requestId"),
         "prompt": prompt,
         "phase": phase,
         "model": params.get("model") or "gemini-3.1-flash-image",

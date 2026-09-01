@@ -2,27 +2,22 @@
 Sprint F 追加 GET /sessions、GET /sessions/{uuid}/messages、DELETE /sessions/{uuid}、GET /tools。"""
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid as uuid_lib
 from typing import Optional
 
-import psycopg
-from psycopg.rows import dict_row
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage
 
-from app.config import get_settings
+from app.agent.execution_guard import ExecutionStatus, acquire_execution
+from app.db.pool import agent_db_connection
 from app.mcp_server.context import context_from_request
 
 
 router = APIRouter(prefix="/agent", tags=["agent"])
-
-
-def _dsn() -> str:
-    return get_settings().computed_checkpoint_dsn
-
 
 def _chunk_text(content) -> str:
     """LangChain/Gemini 流式 chunk.content 可能是 str，也可能是部件列表（含 dict，如
@@ -47,7 +42,7 @@ def _chunk_text(content) -> str:
 
 async def _session_must_belong_to(session_uuid: str, user_id: int) -> dict:
     """校验 session_uuid 归属当前 user_id；不匹配返回 404（防侧信道泄露 uuid 存在性，对应 R20）。"""
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT id, user_id, scope, title, started_at FROM ai.session "
@@ -74,7 +69,7 @@ async def create_session(
     x_user_id: int = Header(..., alias="X-User-Id"),
 ) -> CreateSessionResponse:
     sid = uuid_lib.uuid4().hex
-    async with await psycopg.AsyncConnection.connect(_dsn()) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "INSERT INTO ai.session (session_uuid, user_id, scope) VALUES (%s, %s, %s)",
@@ -102,6 +97,7 @@ async def chat(
     request: Request,
     x_user_id: int = Header(..., alias="X-User-Id"),
 ) -> StreamingResponse:
+    request_id = req.request_id or f"chat-{uuid_lib.uuid4().hex}"
     # 1. 校验 session 归属（防越权，错配 → 404 不泄露 uuid 存在性）
     await _session_must_belong_to(req.session_uuid, x_user_id)
     identity = context_from_request(request)
@@ -125,15 +121,50 @@ async def chat(
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    decision, lease = await acquire_execution(
+        user_id=x_user_id,
+        session_uuid=req.session_uuid,
+        request_id=request_id,
+    )
+    if lease is None:
+        async def _execution_denied():
+            if decision.status is ExecutionStatus.DUPLICATE_COMPLETED:
+                payload = {
+                    "type": "meta",
+                    "event": "request_completed",
+                    "request_id": request_id,
+                    "idempotent_replay": True,
+                }
+            else:
+                payload = {
+                    "type": "error",
+                    "code": decision.status.value,
+                    "detail": "this session already has an active Agent request",
+                    "request_id": request_id,
+                    "retry_after_seconds": round(decision.retry_after_seconds, 3),
+                }
+            yield "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            _execution_denied(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     # 3. 同步更新 session.last_active_at + 首次写 title（首条消息前 30 字）
-    async with await psycopg.AsyncConnection.connect(_dsn()) as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "UPDATE ai.session SET last_active_at = NOW(), title = COALESCE(title, %s) "
-                "WHERE session_uuid = %s",
-                (req.message[:30], req.session_uuid),
-            )
-            await conn.commit()
+    try:
+        async with agent_db_connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "UPDATE ai.session SET last_active_at = NOW(), title = COALESCE(title, %s) "
+                    "WHERE session_uuid = %s",
+                    (req.message[:30], req.session_uuid),
+                )
+                await conn.commit()
+    except Exception:
+        await lease.finish(completed=False)
+        raise
 
     # 4. 跑 graph SSE
     cfg = {"configurable": {"thread_id": req.session_uuid}}
@@ -144,6 +175,7 @@ async def chat(
         "group_id": protected_group_id,
         "brand_id": req.brand_id,
         "session_uuid": req.session_uuid,
+        "request_id": request_id,
         "phase": req.phase,
         "project_uuid": req.project_uuid,
         "artifact_ids": req.asset_ids,
@@ -151,7 +183,18 @@ async def chat(
     }
 
     async def gen():
+        completed = False
+        heartbeat_stop = asyncio.Event()
+        heartbeat = asyncio.create_task(lease.keep_alive(heartbeat_stop))
         try:
+            yield (
+                "data: "
+                + json.dumps(
+                    {"type": "meta", "event": "request_started", "request_id": request_id},
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
             async for ev in graph.astream_events(input_state, cfg, version="v2"):
                 et = ev.get("event")
                 if et == "on_chat_model_stream":
@@ -240,14 +283,28 @@ async def chat(
                             )
                             + "\n\n"
                         )
-            # 末尾 sentinel
+            completed = True
             yield "data: [DONE]\n\n"
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             yield (
                 "data: "
                 + json.dumps({"type": "error", "detail": str(e)}, ensure_ascii=False)
                 + "\n\n"
             )
+            yield "data: [DONE]\n\n"
+        finally:
+            heartbeat_stop.set()
+            try:
+                await asyncio.shield(heartbeat)
+            except (asyncio.CancelledError, Exception):
+                pass
+            finish = asyncio.create_task(lease.finish(completed=completed))
+            try:
+                await asyncio.shield(finish)
+            except asyncio.CancelledError:
+                pass
 
     return StreamingResponse(
         gen(),
@@ -271,7 +328,7 @@ async def list_sessions(
     offset: int = Query(0, ge=0),
 ) -> dict:
     """当前 user 的会话列表，按 last_active_at DESC 分页。"""
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -322,7 +379,7 @@ async def delete_session(
     """软删会话（deleted=1）；尽力删 Checkpointer 中该 thread 的 state。错配 user → 404。"""
     await _session_must_belong_to(session_uuid, x_user_id)
 
-    async with await psycopg.AsyncConnection.connect(_dsn()) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE ai.session SET deleted = 1 WHERE session_uuid = %s AND user_id = %s",
@@ -421,7 +478,7 @@ def _jsonify_row(row: dict) -> dict:
 
 async def _list_recall(user_id: int, limit: int = 50) -> list[dict]:
     """L3：列出该用户的全部跨会话摘要（含已归档，供前端展示 + 恢复）。"""
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -456,7 +513,7 @@ async def update_preference_route(
     if req.value is None and req.user_locked is None:
         raise HTTPException(status_code=400, detail="provide at least one of value / user_locked")
 
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -508,7 +565,7 @@ async def update_recall_route(
     x_user_id: int = Header(..., alias="X-User-Id"),
 ) -> dict:
     """L3 归档 / 恢复：归档后新会话不再召回该摘要；恢复后再次生效。"""
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """

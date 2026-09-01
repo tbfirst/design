@@ -8,27 +8,14 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
-import psycopg
-from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
 from app.config import get_settings
+from app.db.pool import agent_db_connection
 
 logger = logging.getLogger(__name__)
 
-_DSN: Optional[str] = None
-
 _EXTRACTION_DIR = Path(__file__).parent.parent / "prompts" / "extraction"
-
-
-def _dsn() -> str:
-    global _DSN
-    if _DSN is None:
-        s = get_settings()
-        _DSN = (
-            f"postgresql://{s.db_user}:{s.db_password}@{s.db_host}:{s.db_port}/{s.db_name}"
-        )
-    return _DSN
 
 
 @lru_cache(maxsize=1)
@@ -49,7 +36,7 @@ CONFIDENCE_FLOOR = 0.6
 
 
 async def list_preferences(user_id: int) -> list[dict]:
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -79,7 +66,7 @@ async def upsert_preference(
 
     new_ev_entry = evidence if evidence is not None else None
 
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -152,7 +139,7 @@ async def upsert_preference(
 
 
 async def lock_preference(user_id: int, preference_id: int, lock: bool) -> Optional[dict]:
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -170,7 +157,7 @@ async def lock_preference(user_id: int, preference_id: int, lock: bool) -> Optio
 
 
 async def delete_preference(user_id: int, preference_id: int) -> bool:
-    async with await psycopg.AsyncConnection.connect(_dsn()) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "DELETE FROM ai.user_preference WHERE id = %s AND user_id = %s",

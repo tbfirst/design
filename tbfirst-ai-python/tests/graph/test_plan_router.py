@@ -93,8 +93,6 @@ def test_should_plan_breaker_open_returns_react(monkeypatch):
     bs = get_breakers(session)
     bs.planner.reset()
     bs.planner.fail()
-    bs.planner.fail()
-    bs.planner.fail()  # OPEN
     state = _state(
         messages=[HumanMessage(content="生成分镜然后导出视频")],
         session_uuid=session,
@@ -233,19 +231,16 @@ def test_plan_node_exception_calls_planner_fail(monkeypatch):
     }
     result = run(nodes_mod.plan_node(state))
     assert result.get("plan_mode") == "react"
-    # planner.fail() 被调用：_failures 应从 0 → 1
-    assert bs.planner._failures >= 1
+    assert bs.planner.state.value == "open"
 
 
-def test_should_plan_breaker_open_after_failures(monkeypatch):
-    """planner breaker fail 三次后 should_plan 返回 react（降级生效）。"""
+def test_should_plan_breaker_open_after_failure(monkeypatch):
+    """planner breaker 打开后 should_plan 返回 react（降级生效）。"""
     _patch_plan_flag(monkeypatch, True)
     session = "planner-3fail-" + "x" * 18
     bs = get_breakers(session)
     bs.planner.reset()
     bs.planner.fail()
-    bs.planner.fail()
-    bs.planner.fail()  # 第三次，OPEN
 
     state = _state(
         messages=[HumanMessage(content="生成分镜然后导出视频")],

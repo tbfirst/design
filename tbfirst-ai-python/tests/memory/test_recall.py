@@ -2,7 +2,7 @@
 
 无 PG / bge-m3 依赖：
   - monkeypatch recall.embed_text → 返回固定向量（insert 用；search 直接收 query_embedding）
-  - monkeypatch recall.psycopg.AsyncConnection.connect → 返回 FakeConn
+  - monkeypatch recall.agent_db_connection → 返回 FakeConn
 
 FakeStore 是一个进程内的"假 ai.session_summary 表"：INSERT 写一行、SELECT 按
 WHERE user_id=%s 过滤后返回。它复刻真实 SQL 传入的 user_id 参数，因此 cross-user
@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -127,10 +128,11 @@ def _setup(monkeypatch: pytest.MonkeyPatch, default_score: float = 0.9) -> FakeS
 
     monkeypatch.setattr(recall, "embed_text", fake_embed)
 
-    async def fake_connect(dsn: str, row_factory=None):  # noqa: ARG001
-        return FakeConn(store)
+    @asynccontextmanager
+    async def fake_connection():
+        yield FakeConn(store)
 
-    monkeypatch.setattr(recall.psycopg.AsyncConnection, "connect", fake_connect)
+    monkeypatch.setattr(recall, "agent_db_connection", fake_connection)
     return store
 
 
@@ -290,10 +292,11 @@ class FakeConnList:
 def _setup_list(monkeypatch: pytest.MonkeyPatch) -> FakeStoreList:
     store = FakeStoreList()
 
-    async def fake_connect(dsn: str, row_factory=None):  # noqa: ARG001
-        return FakeConnList(store)
+    @asynccontextmanager
+    async def fake_connection():
+        yield FakeConnList(store)
 
-    monkeypatch.setattr(recall.psycopg.AsyncConnection, "connect", fake_connect)
+    monkeypatch.setattr(recall, "agent_db_connection", fake_connection)
     return store
 
 

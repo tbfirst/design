@@ -2,7 +2,7 @@
 
 策略：
   - 创建轻量 TestApp（仅挂载 agent router），绕过完整 lifespan / graph 初始化。
-  - monkeypatch agent.psycopg + semantic.psycopg 的 AsyncConnection.connect，
+  - monkeypatch agent + semantic 的共享连接池入口，
     注入进程内 FakeDB（session 表 + preference 表），按 user_id / id 过滤。
   - 404 防侧信道：越权访问（user_B 查 user_A 的资源）与"资源不存在"同样返回 404。
 
@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 
 import pytest
 from fastapi import FastAPI
@@ -188,17 +189,19 @@ def client(monkeypatch: pytest.MonkeyPatch, fake_db: FakeDB):
     app = FastAPI()
     app.include_router(agent_router)
 
-    # patch agent.py 里的 psycopg 连接
-    async def fake_connect_agent(dsn, row_factory=None):  # noqa: ARG001
-        return FakeConn(fake_db)
+    # patch agent.py 里的共享连接池入口
+    @asynccontextmanager
+    async def fake_connect_agent():
+        yield FakeConn(fake_db)
 
-    monkeypatch.setattr(agent_module.psycopg.AsyncConnection, "connect", fake_connect_agent)
+    monkeypatch.setattr(agent_module, "agent_db_connection", fake_connect_agent)
 
-    # patch semantic.py 里的 psycopg 连接（list_preferences / delete_preference）
-    async def fake_connect_semantic(dsn, row_factory=None):  # noqa: ARG001
-        return FakeConn(fake_db)
+    # patch semantic.py 里的共享连接池入口（list_preferences / delete_preference）
+    @asynccontextmanager
+    async def fake_connect_semantic():
+        yield FakeConn(fake_db)
 
-    monkeypatch.setattr(semantic_module.psycopg.AsyncConnection, "connect", fake_connect_semantic)
+    monkeypatch.setattr(semantic_module, "agent_db_connection", fake_connect_semantic)
 
     # 不注入 app.state.agent_graph（值 None）→ 在越权 404 命中前不会被访问
     return TestClient(app, raise_server_exceptions=False)

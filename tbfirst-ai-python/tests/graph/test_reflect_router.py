@@ -74,8 +74,6 @@ def test_accept_when_evaluator_breaker_open(monkeypatch):
     bs = get_breakers(session)
     bs.evaluator.reset()
     bs.evaluator.fail()
-    bs.evaluator.fail()
-    bs.evaluator.fail()  # OPEN
     result = run(reflect_router(_state(last_eval_score=0.3, reflect_count=0, session_uuid=session)))
     assert result == "accept"
     bs.evaluator.reset()

@@ -4,27 +4,12 @@ from __future__ import annotations
 import logging
 from typing import Optional, Sequence
 
-import psycopg
-from psycopg.rows import dict_row
 from psycopg.types.json import Json
 
-from app.config import get_settings
+from app.db.pool import agent_db_connection
 from app.services.embedding import embed_text
 
 logger = logging.getLogger(__name__)
-
-_DSN: Optional[str] = None
-
-
-def _dsn() -> str:
-    global _DSN
-    if _DSN is None:
-        s = get_settings()
-        _DSN = (
-            f"postgresql://{s.db_user}:{s.db_password}@{s.db_host}:{s.db_port}/{s.db_name}"
-        )
-    return _DSN
-
 
 def _vec_literal(vec: Sequence[float]) -> str:
     """将 Python 的浮点数序列转换成 pgvector 扩展能直接识别的字符串字面量格式,注意 pgvector 默认使用 6 位小数精度。"""
@@ -41,7 +26,7 @@ async def insert_session_summary(
     # 异步调用 Embedding 服务
     vec = await embed_text(summary)
     vec_lit = _vec_literal(vec)
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -67,7 +52,7 @@ async def search_session_summary(
     if not query_embedding:
         return []
     vec_lit = _vec_literal(query_embedding)
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -105,7 +90,7 @@ async def mark_recalled(summary_ids: Sequence[int]) -> None:
     ids = [int(x) for x in summary_ids if x is not None]
     if not ids:
         return
-    async with await psycopg.AsyncConnection.connect(_dsn()) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -120,7 +105,7 @@ async def mark_recalled(summary_ids: Sequence[int]) -> None:
 
 
 async def list_session_summaries(user_id: int, limit: int = 50) -> list[dict]:
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """

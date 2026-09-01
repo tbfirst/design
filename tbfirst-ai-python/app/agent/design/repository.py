@@ -4,7 +4,6 @@ import uuid
 from typing import Any
 
 import psycopg
-from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from app.agent.design.models import (
@@ -15,15 +14,7 @@ from app.agent.design.models import (
     DesignProject,
     DesignRun,
 )
-from app.config import get_settings
-
-
-def _dsn() -> str:
-    settings = get_settings()
-    return (
-        f"host={settings.db_host} port={settings.db_port} dbname={settings.db_name} "
-        f"user={settings.db_user} password={settings.db_password}"
-    )
+from app.db.pool import agent_db_connection
 
 
 def _project(row: dict[str, Any]) -> DesignProject:
@@ -88,7 +79,7 @@ class DesignRepository:
     ) -> DesignProject:
         project_uuid = uuid.uuid4().hex
         brief.refresh_readiness()
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -108,7 +99,7 @@ class DesignRepository:
         return _project(row)
 
     async def list_projects(self, user_id: int, *, limit: int = 50) -> list[DesignProject]:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -122,7 +113,7 @@ class DesignRepository:
         return [_project(row) for row in rows]
 
     async def get_project(self, project_uuid: str, user_id: int) -> DesignProject | None:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT * FROM ai.design_project WHERE project_uuid = %s AND user_id = %s AND deleted = 0",
@@ -140,7 +131,7 @@ class DesignRepository:
         expected_version: int | None,
     ) -> DesignProject | None:
         brief.refresh_readiness()
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 params: list[Any] = [
                     Jsonb(brief.model_dump(mode="json")), brief.version,
@@ -180,7 +171,7 @@ class DesignRepository:
         return _project(row) if row else None
 
     async def find_run_by_request(self, project_id: int, request_id: str) -> tuple[DesignRun, DesignAction] | None:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT * FROM ai.design_run WHERE project_id = %s AND request_id = %s",
@@ -210,7 +201,8 @@ class DesignRepository:
             return existing
 
         action_uuid = uuid.uuid4().hex
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        duplicate = False
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 try:
                     await cur.execute(
@@ -246,14 +238,16 @@ class DesignRepository:
                     await conn.commit()
                 except psycopg.errors.UniqueViolation:
                     await conn.rollback()
-                    existing = await self.find_run_by_request(project.id, request_id)
-                    if existing:
-                        return existing
-                    raise
+                    duplicate = True
+        if duplicate:
+            existing = await self.find_run_by_request(project.id, request_id)
+            if existing:
+                return existing
+            raise RuntimeError("duplicate design request exists without an action")
         return _run(run_row), _action(action_row)
 
     async def get_action_for_user(self, action_uuid: str, user_id: int) -> DesignAction | None:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -276,7 +270,7 @@ class DesignRepository:
         approve: bool,
     ) -> DesignAction | None:
         status = "approved" if approve else "rejected"
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -303,7 +297,7 @@ class DesignRepository:
         return _action(row) if row else None
 
     async def get_run_for_user(self, run_id: int, user_id: int) -> DesignRun | None:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -317,7 +311,7 @@ class DesignRepository:
         return _run(row) if row else None
 
     async def latest_open_run(self, project_id: int, user_id: int) -> tuple[DesignRun, DesignAction] | None:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -340,7 +334,7 @@ class DesignRepository:
         return (_run(run_row), _action(action_row)) if action_row else None
 
     async def action_for_run(self, run_id: int, user_id: int) -> DesignAction | None:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -355,7 +349,7 @@ class DesignRepository:
         return _action(row) if row else None
 
     async def claim_action(self, action_uuid: str, user_id: int) -> DesignAction | None:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -395,7 +389,7 @@ class DesignRepository:
         width: int | None = None,
         height: int | None = None,
     ) -> DesignArtifact:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 revision = 1
                 role = "candidate"
@@ -437,7 +431,7 @@ class DesignRepository:
         url: str,
         provenance: dict[str, Any],
     ) -> DesignArtifact:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -468,7 +462,7 @@ class DesignRepository:
         return _artifact(row)
 
     async def complete_run(self, *, run_id: int, action_uuid: str, generation_calls: int) -> None:
-        async with await psycopg.AsyncConnection.connect(_dsn()) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "UPDATE ai.design_action SET status = 'executed', resolved_at = NOW() WHERE action_uuid = %s",
@@ -488,7 +482,7 @@ class DesignRepository:
                 await conn.commit()
 
     async def fail_run(self, *, run_id: int, action_uuid: str, error_code: str) -> None:
-        async with await psycopg.AsyncConnection.connect(_dsn()) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "UPDATE ai.design_action SET status = 'failed', resolved_at = NOW() WHERE action_uuid = %s",
@@ -508,7 +502,7 @@ class DesignRepository:
                 await conn.commit()
 
     async def list_artifacts(self, project_uuid: str, user_id: int) -> list[DesignArtifact]:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -523,7 +517,7 @@ class DesignRepository:
         return [_artifact(row) for row in rows]
 
     async def get_artifact(self, project_id: int, artifact_id: int, user_id: int) -> DesignArtifact | None:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -537,7 +531,7 @@ class DesignRepository:
         return _artifact(row) if row else None
 
     async def select_artifact(self, project_uuid: str, user_id: int, artifact_id: int) -> DesignArtifact | None:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """
@@ -567,7 +561,7 @@ class DesignRepository:
         return _artifact(row)
 
     async def finalize_project(self, project_uuid: str, user_id: int) -> DesignArtifact | None:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     """

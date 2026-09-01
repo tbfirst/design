@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -30,8 +31,10 @@ async def lifespan(app: FastAPI):
     if settings.design_agent_enabled:
         try:
             from app.db.migrations import run_migrations
+            from app.db.pool import open_agent_db_pool
 
             await run_migrations()
+            await open_agent_db_pool()
             logger.info("[tbfirst-ai-python] design agent migrations ready")
         except Exception as e:
             logger.exception("design agent migration failed (routes may be unavailable): %s", e)
@@ -66,6 +69,24 @@ async def lifespan(app: FastAPI):
             await pool.close()      # 关闭数据库连接池
         except Exception as e:
             logger.warning("agent checkpointer pool 关闭失败: %s", e)
+    try:
+        from app.agent.design.evaluator import close_evaluator_client
+        from app.mcp_server.clients.gateway import close_gateway_client
+        from app.common.redis.async_client import close_async_redis
+        from app.db.pool import close_agent_db_pool
+
+        results = await asyncio.gather(
+            close_evaluator_client(),
+            close_gateway_client(),
+            close_async_redis(),
+            close_agent_db_pool(),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("shared async resource 关闭失败: %s", result)
+    except Exception as e:
+        logger.warning("shared async resource cleanup 初始化失败: %s", e)
     nacos_client.deregister()
 
 

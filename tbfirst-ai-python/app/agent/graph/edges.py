@@ -154,9 +154,7 @@ async def should_plan(state: dict) -> str:
 
     # planner 熔断器 OPEN → 强制 react（不变量 3）
     session = state.get("session_uuid")
-    try:
-        get_breakers(session).planner.check()
-    except RuntimeError:
+    if not get_breakers(session).planner.available():
         return "react"
 
     # 判断是否是自定义的白名单的阶段 {"storyboard", "cinestitch", "image_pipeline", "video"}
@@ -256,9 +254,7 @@ async def reflect_router(state: dict) -> str:
         return "accept"
 
     session = state.get("session_uuid")
-    try:
-        get_breakers(session).evaluator.check()
-    except RuntimeError:
+    if not get_breakers(session).evaluator.available():
         return "accept"
 
     return "revise"

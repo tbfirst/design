@@ -1,7 +1,7 @@
 """V6.M2.E.8: L5 procedural 单元测试。3 case。
 
 无 PG / bge-m3：monkeypatch `procedural.embed_text`（insert 用）+
-`procedural.psycopg.AsyncConnection.connect`（有状态 FakeStore，复刻
+`procedural.agent_db_connection`（有状态 FakeStore，复刻
 `WHERE user_id=%s OR (group_id IS NOT NULL AND group_id=ANY(%s))` 的 scope）。
 
 case：
@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from contextlib import asynccontextmanager
 
 import pytest
 
@@ -122,10 +123,11 @@ def _setup(monkeypatch, default_score: float = 0.9) -> FakeStore:
 
     monkeypatch.setattr(procedural, "embed_text", fake_embed)
 
-    async def fake_connect(dsn, row_factory=None):  # noqa: ARG001
-        return FakeConn(store)
+    @asynccontextmanager
+    async def fake_connection():
+        yield FakeConn(store)
 
-    monkeypatch.setattr(procedural.psycopg.AsyncConnection, "connect", fake_connect)
+    monkeypatch.setattr(procedural, "agent_db_connection", fake_connection)
     return store
 
 
@@ -291,10 +293,11 @@ class FakeConnListWF:
 def _setup_list_wf(monkeypatch) -> FakeStoreListWF:
     store = FakeStoreListWF()
 
-    async def fake_connect(dsn, row_factory=None):  # noqa: ARG001
-        return FakeConnListWF(store)
+    @asynccontextmanager
+    async def fake_connection():
+        yield FakeConnListWF(store)
 
-    monkeypatch.setattr(procedural.psycopg.AsyncConnection, "connect", fake_connect)
+    monkeypatch.setattr(procedural, "agent_db_connection", fake_connection)
     return store
 
 

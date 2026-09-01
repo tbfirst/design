@@ -23,6 +23,7 @@ class AppState(TypedDict):
     group_id: Optional[int]
     brand_id: Optional[int]
     session_uuid: str                 # == LangGraph 的 thread_id
+    request_id: Optional[str]         # 当前用户请求的跨服务幂等标识
     phase: Optional[str]
 
     # system prompt 缓存（每轮由 compose_prompt_node 写入，不持久化）

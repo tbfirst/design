@@ -1,21 +1,11 @@
 """L1 基础规则加载器（PG ai.basic_rules）。"""
 from __future__ import annotations
 from typing import Optional
-import psycopg
-from psycopg.rows import dict_row
-from app.config import get_settings
-
-_DSN = None
-def _dsn() -> str:
-    global _DSN
-    if _DSN is None:
-        s = get_settings()
-        _DSN = f"postgresql://{s.db_user}:{s.db_password}@{s.db_host}:{s.db_port}/{s.db_name}"
-    return _DSN
+from app.db.pool import agent_db_connection
 
 async def load_basic_rules(user_id: int, brand_id: Optional[int] = None, group_id: Optional[int] = None) -> str:
     """加载基础规则，优先级 global < group < brand，同一 scope 内按 version 降序取最新。"""
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -43,7 +33,7 @@ async def load_basic_rules(user_id: int, brand_id: Optional[int] = None, group_i
 
 
 async def list_basic_rules(scope: Optional[str] = None, scope_ref_id: Optional[int] = None, active_only: bool = True) -> list[dict]:
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             sql = "SELECT * FROM ai.basic_rules WHERE 1=1"
             params: list = []
@@ -61,7 +51,7 @@ async def list_basic_rules(scope: Optional[str] = None, scope_ref_id: Optional[i
 
 
 async def upsert_basic_rules(scope: str, scope_ref_id: Optional[int], category: str, body: str, created_by: Optional[int]) -> int:
-    async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
@@ -89,7 +79,7 @@ async def upsert_basic_rules(scope: str, scope_ref_id: Optional[int], category: 
 
 
 async def soft_delete_basic_rules(basic_rule_id: int) -> None:
-    async with await psycopg.AsyncConnection.connect(_dsn()) as conn:
+    async with agent_db_connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE ai.basic_rules SET is_active = FALSE, update_time = NOW() WHERE id = %s",

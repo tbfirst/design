@@ -91,6 +91,11 @@ class Settings(BaseSettings):
     agent_reflect_enabled: bool = False   # M2 Reflection/Verify 层
     agent_reflexion_enabled: bool = False # M4 Reflexion 长期记忆写入
     design_agent_enabled: bool = True
+    agent_db_pool_min_size: int = Field(default=1, ge=0)
+    agent_db_pool_max_size: int = Field(default=10, ge=1)
+    agent_db_pool_timeout_seconds: float = Field(default=10.0, gt=0)
+    agent_execution_lease_seconds: int = Field(default=120, ge=15)
+    agent_request_dedupe_seconds: int = Field(default=86400, ge=30)
 
     # Design Agent tool gateway. It reuses the authenticated platform gateway.
     tbfirst_mcp_gateway_url: str = "http://localhost:8000"
@@ -98,6 +103,10 @@ class Settings(BaseSettings):
     tbfirst_mcp_token_secret: str = ""
     tbfirst_mcp_token_map: str = ""
     tbfirst_mcp_require_employee_mapping: bool = True
+    tbfirst_mcp_http_timeout_seconds: float = 120.0
+    tbfirst_mcp_retry_attempts: int = 3
+    tbfirst_mcp_circuit_initial_open_seconds: float = Field(default=10.0, gt=0)
+    tbfirst_mcp_circuit_max_open_seconds: float = Field(default=60.0, gt=0)
     tbfirst_mcp_tool_timeout_seconds: int = 240
     tbfirst_mcp_max_images_per_call: int = 5
     tbfirst_mcp_max_image_bytes: int = 10485760
@@ -107,6 +116,7 @@ class Settings(BaseSettings):
     tbfirst_mcp_audit_path: str = "logs/design_tool_audit.jsonl"
     tbfirst_mcp_user_daily_default: int = 100
     tbfirst_mcp_group_daily_default: int = 1000
+    tbfirst_mcp_quota_period_seconds: int = 86400
     tbfirst_mcp_enabled_tools: str = (
         "tbfirst_check_workspace,"
         "tbfirst_create_adimage_set,"

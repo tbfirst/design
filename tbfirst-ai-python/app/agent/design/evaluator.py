@@ -4,6 +4,7 @@ import base64
 import io
 import json
 import logging
+import threading
 from functools import lru_cache
 from pathlib import Path
 from statistics import fmean
@@ -19,6 +20,34 @@ from app.mcp_server.context import McpContext
 logger = logging.getLogger(__name__)
 
 _EVALUATOR_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompts" / "design" / "evaluator.md"
+_asset_http_client: httpx.AsyncClient | None = None
+_asset_client_lock = threading.Lock()
+
+
+def _get_asset_http_client() -> httpx.AsyncClient:
+    global _asset_http_client
+    if _asset_http_client is None:
+        with _asset_client_lock:
+            if _asset_http_client is None:
+                _asset_http_client = httpx.AsyncClient(
+                    timeout=30.0,
+                    follow_redirects=True,
+                    limits=httpx.Limits(
+                        max_connections=20,
+                        max_keepalive_connections=10,
+                        keepalive_expiry=30,
+                    ),
+                    trust_env=False,
+                )
+    return _asset_http_client
+
+
+async def close_evaluator_client() -> None:
+    global _asset_http_client
+    with _asset_client_lock:
+        client, _asset_http_client = _asset_http_client, None
+    if client is not None:
+        await client.aclose()
 
 
 @lru_cache(maxsize=1)
@@ -60,13 +89,12 @@ async def _load_image(url: str, ctx: McpContext) -> tuple[bytes, str, int, int]:
         headers["Authorization"] = ctx.authorization
     if ctx.user_id:
         headers["X-User-Id"] = ctx.user_id
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        response = await client.get(resolved, headers=headers)
-        response.raise_for_status()
-        content = response.content
-        if len(content) > settings.tbfirst_mcp_max_image_bytes:
-            raise ValueError("artifact image exceeds evaluation size limit")
-        mime = response.headers.get("content-type", "image/png").split(";", 1)[0]
+    response = await _get_asset_http_client().get(resolved, headers=headers)
+    response.raise_for_status()
+    content = response.content
+    if len(content) > settings.tbfirst_mcp_max_image_bytes:
+        raise ValueError("artifact image exceeds evaluation size limit")
+    mime = response.headers.get("content-type", "image/png").split(";", 1)[0]
     with Image.open(io.BytesIO(content)) as image:
         width, height = image.size
         if image.format:

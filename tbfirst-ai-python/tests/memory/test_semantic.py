@@ -1,6 +1,6 @@
 """V6.M2.C.8: L4 semantic 单元测试。5 case，覆盖 upsert 4 分支规则 + Gemini 萃取链 mock。
 
-无 PG 依赖：用 FakeAsyncConnection 拦截所有 psycopg.AsyncConnection.connect 调用，
+无 PG 依赖：用 FakeAsyncConnection 拦截共享连接池入口，
 脚本化 fetchone/fetchall 返回；用 monkeypatch 替换 ChatGoogleGenerativeAI 为返回固定 JSON
 的伪类。运行：pytest tests/memory/test_semantic.py -v
 """
@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import sys
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -20,7 +21,7 @@ from app.agent.memory import semantic  # noqa: E402
 
 
 # -----------------------------------------------------------------------------
-# Fake async psycopg 连接：支持 `async with await psycopg.AsyncConnection.connect(...)`
+# Fake async psycopg 连接：支持 `async with agent_db_connection()`
 # -----------------------------------------------------------------------------
 
 
@@ -73,13 +74,14 @@ class FakeConn:
 
 
 def _patch_connect(monkeypatch: pytest.MonkeyPatch, cursor: FakeCursor) -> FakeConn:
-    """把 psycopg.AsyncConnection.connect 替换成返回 FakeConn 的协程。"""
+    """把共享连接池入口替换成返回 FakeConn 的异步上下文。"""
     conn = FakeConn(cursor)
 
-    async def fake_connect(dsn: str, row_factory=None):  # noqa: ARG001
-        return conn
+    @asynccontextmanager
+    async def fake_connection():
+        yield conn
 
-    monkeypatch.setattr(semantic.psycopg.AsyncConnection, "connect", fake_connect)
+    monkeypatch.setattr(semantic, "agent_db_connection", fake_connection)
     return conn
 
 

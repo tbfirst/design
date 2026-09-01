@@ -50,7 +50,7 @@ async def read_cached_tool_result(
         return {"found": False, "content": "", "chars": 0, "error": str(e)}
 
     # 读盘成功（即便文件不存在也算依赖正常，只是没命中）→ 复位熔断器
-    cb.reset()
+    cb.succeed()
     if content is None:
         return {"found": False, "content": "", "chars": 0}
     return {"found": True, "content": content, "chars": len(content)}

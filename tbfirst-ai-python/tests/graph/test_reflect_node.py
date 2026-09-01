@@ -115,13 +115,11 @@ def test_reflect_gate_evaluator_exception_accept(monkeypatch):
     session = "u" * 32
     bs = get_breakers(session)
     bs.evaluator.reset()
-    initial_failures = bs.evaluator._failures
 
     state = _image_state()
     result = run(reflect_gate_node(state))
     assert result.get("last_eval_score") == 1.0
-    # evaluator.fail() 被调用了一次
-    assert bs.evaluator._failures == initial_failures + 1
+    assert bs.evaluator.state.value == "open"
 
 
 def test_reflect_gate_breaker_open_skips_eval(monkeypatch):
@@ -133,8 +131,6 @@ def test_reflect_gate_breaker_open_skips_eval(monkeypatch):
     bs = get_breakers(session)
     bs.evaluator.reset()
     bs.evaluator.fail()
-    bs.evaluator.fail()
-    bs.evaluator.fail()  # 达到 threshold=3，OPEN
 
     state = _image_state()
     state["session_uuid"] = session

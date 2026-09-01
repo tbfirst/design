@@ -4,10 +4,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import psycopg
 from langchain_core.messages import SystemMessage
 
 from app.config import get_settings
+from app.db.pool import agent_db_connection
 from app.agent.graph.compression import cascade_compress_node as compress_state_node
 from app.agent.graph.state import AppState
 from app.agent.memory.basic_rules import load_basic_rules
@@ -30,14 +30,6 @@ _L6_DEFAULT_COLLECTIONS = ["brand-dna", "garment-taxonomy", "success-prompts"]
 logger = logging.getLogger(__name__)
 
 
-def _dsn() -> str:
-    """构建 PostgreSQL DSN 连接字符串。"""
-    s = get_settings()
-    return (
-        f"postgresql://{s.db_user}:{s.db_password}@{s.db_host}:{s.db_port}/{s.db_name}"
-    )
-
-
 async def load_basic_rules_node(state: AppState) -> dict:
     """L1：合并 global + group + brand 三段基础规则。"""
     body = await load_basic_rules(state["user_id"], state.get("brand_id"), state.get("group_id"))
@@ -50,7 +42,7 @@ async def load_preferences_node(state: AppState) -> dict:
     if rows:
         ids = [r["id"] for r in rows]
         try:
-            async with await psycopg.AsyncConnection.connect(_dsn()) as conn:
+            async with agent_db_connection() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(
                         "UPDATE ai.user_preference SET last_injected_at = NOW() WHERE id = ANY(%s)",
@@ -229,6 +221,7 @@ async def reflect_gate_node(state: AppState) -> dict:
         breakers.evaluator.fail()
         return {"last_eval_score": 1.0, "_pending_critique": ""}
 
+    breakers.evaluator.succeed()
     return {"last_eval_score": score, "_pending_critique": critique}
 
 
@@ -275,7 +268,7 @@ async def plan_node(state: AppState) -> dict:
     """
     import json as _json
     from app.agent.prompts.planner import _PLAN_PROMPT
-    from app.agent.graph.compression.circuit_breaker import get_breakers
+    from app.agent.graph.compression.circuit_breaker import CircuitOpenError, get_breakers
 
     # 未开启 plan 功能则降级 plan_mode="react"
     if not get_settings().agent_plan_enabled:
@@ -292,7 +285,9 @@ async def plan_node(state: AppState) -> dict:
                 break
 
     session = state.get("session_uuid")
+    planner_breaker = get_breakers(session).planner
     try:
+        planner_breaker.check()
         llm = _planner_llm()
         prompt = _PLAN_PROMPT.format(user_request=user_request, max_steps=_NODE_MAX_PLAN_STEPS)
         resp = await llm.ainvoke(prompt)
@@ -309,14 +304,16 @@ async def plan_node(state: AppState) -> dict:
             steps = []
         steps = [str(s) for s in steps[:_NODE_MAX_PLAN_STEPS]]
         if not steps:
+            planner_breaker.succeed()
             return {"plan_mode": "react", "plan": [], "plan_cursor": 0, "replan_count": 0}
+        planner_breaker.succeed()
         return {"plan": steps, "plan_cursor": 0, "replan_count": 0, "plan_mode": "plan"}
+    except CircuitOpenError as e:
+        logger.info("plan_node 跳过：%s", e)
+        return {"plan": [], "plan_cursor": 0, "replan_count": 0, "plan_mode": "react"}
     except Exception as e:
         logger.warning("plan_node 失败（降级 react）: %s", e)
-        try:
-            get_breakers(session).planner.fail()
-        except Exception:
-            pass
+        planner_breaker.fail()
         return {"plan": [], "plan_cursor": 0, "replan_count": 0, "plan_mode": "react"}
 
 
@@ -360,7 +357,10 @@ async def replan_node(state: AppState) -> dict:
     if new_cursor >= len(plan):
         return {"plan_cursor": len(plan), "replan_count": new_replan_count, "_current_subgoal": ""}
 
+    from app.agent.graph.compression.circuit_breaker import CircuitOpenError, get_breakers
+    planner_breaker = get_breakers(session).planner
     try:
+        planner_breaker.check()
         llm = _planner_llm()
         prompt = _REPLAN_PROMPT.format(
             cursor=cursor,
@@ -380,13 +380,14 @@ async def replan_node(state: AppState) -> dict:
         new_plan = _json.loads(raw.strip())
         if isinstance(new_plan, list) and new_plan:
             new_plan = [str(s) for s in new_plan[:_NODE_MAX_PLAN_STEPS]]
+            planner_breaker.succeed()
             return {"plan": new_plan, "plan_cursor": new_cursor, "replan_count": new_replan_count}
+        raise ValueError("planner returned an empty or invalid plan")
+    except CircuitOpenError as e:
+        logger.info("replan_node 跳过：%s", e)
     except Exception as e:
         logger.warning("replan_node 失败（保持 cursor 递增）: %s", e)
-        try:
-            get_breakers(session).planner.fail()
-        except Exception:
-            pass
+        planner_breaker.fail()
 
     return {"plan_cursor": new_cursor, "replan_count": new_replan_count}
 

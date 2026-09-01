@@ -26,6 +26,7 @@ class ToolPolicy(BaseModel):
     required_role: str = "employee"
     required_group_role: str | None = None
     quota_type: str | None = None
+    quota_cost: int = Field(default=1, ge=1, le=100)
     cost_level: str = "low"
     uses_private_assets: bool = False
     writes_assets: bool = False

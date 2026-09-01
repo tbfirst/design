@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -120,6 +121,11 @@ async def execute_run_stream(
     yield _event("run_started", project_uuid=project.project_uuid, run=run, sequence=sequence)
 
     if canonical_hash(action.payload) != action.payload_hash:
+        await repository.fail_run(
+            run_id=run.id,
+            action_uuid=action.action_uuid,
+            error_code="ApprovalPayloadMismatch",
+        )
         yield _event(
             "run_failed", project_uuid=project.project_uuid, run=run, sequence=sequence + 1,
             error="approval payload hash mismatch",
@@ -156,15 +162,18 @@ async def execute_run_stream(
     payload = claimed.payload
     tool_name = str(payload["tool_name"])
     params = dict(payload.get("params") or {})
+    params.setdefault(
+        "request_id",
+        f"design:{project.project_uuid}:{run.id}:{claimed.payload_hash[:16]}",
+    )
     parent_artifact_id = payload.get("parent_artifact_id")
     tool_input_hash = canonical_hash({"tool": tool_name, "params": params})
-    sequence += 1
-    yield _event(
-        "tool_started", project_uuid=project.project_uuid, run=run, sequence=sequence,
-        tool=tool_name,
-    )
-
     try:
+        sequence += 1
+        yield _event(
+            "tool_started", project_uuid=project.project_uuid, run=run, sequence=sequence,
+            tool=tool_name,
+        )
         result = await execute_design_tool(tool_name, params, ctx)
         sequence += 1
         yield _event(
@@ -215,6 +224,17 @@ async def execute_run_stream(
             "run_completed", project_uuid=project.project_uuid, run=run, sequence=sequence,
             artifact_ids=[artifact.id for artifact in artifacts],
         )
+    except (asyncio.CancelledError, GeneratorExit):
+        logger.info("design run cancelled by client: run_id=%s", run.id)
+        try:
+            await asyncio.shield(repository.fail_run(
+                run_id=run.id,
+                action_uuid=action.action_uuid,
+                error_code="ClientDisconnected",
+            ))
+        except Exception:
+            logger.exception("failed to persist cancelled design run: run_id=%s", run.id)
+        raise
     except Exception as exc:
         logger.exception("design run failed: run_id=%s", run.id)
         await repository.fail_run(

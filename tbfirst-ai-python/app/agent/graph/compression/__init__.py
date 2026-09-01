@@ -8,12 +8,10 @@ from __future__ import annotations
 import json
 import logging
 
-import psycopg
-from psycopg.rows import dict_row
-
 from langchain_core.messages import RemoveMessage
 
 from app.config import get_settings
+from app.db.pool import agent_db_connection
 from app.agent.graph.state import AppState
 from app.agent.graph.compression.circuit_breaker import get_breakers
 from app.agent.graph.compression.l1_tool_budget import apply_l1
@@ -62,18 +60,12 @@ def _simulate(msgs, removes, new_msgs):
     return result
 
 
-def _dsn() -> str:
-    """    构建 PostgreSQL 数据库连接字符串    """
-    s = get_settings()
-    return f"postgresql://{s.db_user}:{s.db_password}@{s.db_host}:{s.db_port}/{s.db_name}"
-
-
 async def _lookup_session_id(session_uuid: str, user_id: int) -> int | None:
     """    根据 session_uuid 和 user_id 从数据库中查询对应的 session_id    """
     if not session_uuid:
         return None
     try:
-        async with await psycopg.AsyncConnection.connect(_dsn(), row_factory=dict_row) as conn:
+        async with agent_db_connection() as conn:
             async with conn.cursor() as cur:
                 await cur.execute(
                     "SELECT id FROM ai.session WHERE session_uuid = %s AND user_id = %s AND deleted = 0",
@@ -170,7 +162,7 @@ async def cascade_compress_node(state: AppState) -> dict:
                             RemoveMessage(id=m.id) for m in msgs if getattr(m, "id", None)
                         )
                         all_changes.extend(summary_only)
-                        dependency_cb.reset()
+                        dependency_cb.succeed()
                     except Exception as e:
                         # L4（外部依赖）失败：记 dependency 熔断器，但保留已算好的 L1-L3 变更，不前功尽弃
                         dependency_cb.fail()
@@ -178,10 +170,10 @@ async def cascade_compress_node(state: AppState) -> dict:
 
         if not all_changes:
             # 没有任何实际压缩动作，但流程本身正常 → 复位主熔断器
-            compress_cb.reset()
+            compress_cb.succeed()
             return {}
         # L1-L3（及可选 L4）流程未抛异常 → 复位主熔断器
-        compress_cb.reset()
+        compress_cb.succeed()
         return {"messages": all_changes, "last_compress_at_msg_id": _post_compress_count(msgs, all_changes)}
 
     # 降级异常处理

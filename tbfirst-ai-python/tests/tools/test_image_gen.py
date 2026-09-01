@@ -24,41 +24,35 @@ def run(coro):
 
 
 def _state(user_id: int = 7) -> dict:
-    return {"user_id": user_id, "messages": []}
+    return {
+        "user_id": user_id,
+        "group_id": 3,
+        "session_uuid": "session-123",
+        "request_id": "request-123",
+        "messages": [],
+    }
 
 
-def test_successful_submission(monkeypatch: pytest.MonkeyPatch):
-    """httpx mock が job_id を返す場合、status=submitted で返ること。"""
-    monkeypatch.setattr(ig_ns, "_IMAGE_SERVICE_URL", "http://fake-image:8080")
+def test_successful_submission():
+    """Gateway が job id を返す場合、status=submitted で返ること。"""
+    mock_client = MagicMock()
+    mock_client.generate_image = AsyncMock(return_value={"jobId": "job-abc-123", "status": "pending"})
 
-    fake_resp = MagicMock()
-    fake_resp.json.return_value = {"job_id": "job-abc-123"}
-    fake_resp.raise_for_status = MagicMock()
-
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.post = AsyncMock(return_value=fake_resp)
-
-    with patch("app.agent.graph.tools.image_gen.httpx.AsyncClient", return_value=mock_client):
+    with patch("app.agent.graph.tools.image_gen.GatewayClient", return_value=mock_client):
         result = run(image_gen.ainvoke({"prompt": "a cat on a sofa", "state": _state(user_id=5)}))
 
     assert result["ok"] is True
-    assert result["status"] == "submitted"
+    assert result["status"] == "pending"
     assert result["job_id"] == "job-abc-123"
     assert result["prompt"] == "a cat on a sofa"
 
 
-def test_http_failure_returns_error(monkeypatch: pytest.MonkeyPatch):
-    """httpx が例外を投げても error を返すこと（例外なし）。"""
-    monkeypatch.setattr(ig_ns, "_IMAGE_SERVICE_URL", "http://fake-image:8080")
+def test_http_failure_returns_error():
+    """Gateway が例外を投げても error を返すこと（例外なし）。"""
+    mock_client = MagicMock()
+    mock_client.generate_image = AsyncMock(side_effect=Exception("connection refused"))
 
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.post = AsyncMock(side_effect=Exception("connection refused"))
-
-    with patch("app.agent.graph.tools.image_gen.httpx.AsyncClient", return_value=mock_client):
+    with patch("app.agent.graph.tools.image_gen.GatewayClient", return_value=mock_client):
         result = run(image_gen.ainvoke({"prompt": "test prompt", "state": _state()}))
 
     assert result["ok"] is False
@@ -66,37 +60,38 @@ def test_http_failure_returns_error(monkeypatch: pytest.MonkeyPatch):
     assert "connection refused" in result["error"]
 
 
-def test_user_id_injected(monkeypatch: pytest.MonkeyPatch):
-    """state['user_id'] が POST ボディに含まれること。"""
-    monkeypatch.setattr(ig_ns, "_IMAGE_SERVICE_URL", "http://fake-image:8080")
+def test_identity_and_idempotency_are_forwarded():
+    """state identity と安定した request id が Gateway に渡ること。"""
     captured: dict = {}
 
-    fake_resp = MagicMock()
-    fake_resp.json.return_value = {"job_id": "j1"}
-    fake_resp.raise_for_status = MagicMock()
+    async def fake_generate(payload):
+        captured["payload"] = payload
+        return {"jobId": "j1", "status": "pending"}
 
-    async def fake_post(url, json=None, **kwargs):
-        captured["body"] = json
-        return fake_resp
+    mock_client = MagicMock()
+    mock_client.generate_image = fake_generate
 
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.post = fake_post
-
-    with patch("app.agent.graph.tools.image_gen.httpx.AsyncClient", return_value=mock_client):
+    with patch("app.agent.graph.tools.image_gen.GatewayClient", return_value=mock_client) as client_cls:
         run(image_gen.ainvoke({"prompt": "test", "state": _state(user_id=99)}))
 
-    assert captured["body"]["user_id"] == 99
-    assert captured["body"]["user_id"] != 0
+    ctx = client_cls.call_args.args[0]
+    assert ctx.user_id == "99"
+    assert ctx.group_id == "3"
+    assert captured["payload"]["requestId"].startswith("agent:")
+    assert len(captured["payload"]["requestId"]) == 70
 
 
-def test_no_image_service_url_returns_stub(monkeypatch: pytest.MonkeyPatch):
-    """IMAGE_SERVICE_URL 未設定の場合、stub 応答を返すこと。"""
-    monkeypatch.setattr(ig_ns, "_IMAGE_SERVICE_URL", "")
+def test_idempotency_key_is_stable():
+    mock_client = MagicMock()
+    payloads: list[dict] = []
 
-    result = run(image_gen.ainvoke({"prompt": "test", "state": _state()}))
+    async def fake_generate(payload):
+        payloads.append(payload)
+        return {"jobId": "j1", "status": "pending"}
 
-    assert result["ok"] is False
-    assert result["status"] == "stub"
-    assert "error" in result
+    mock_client.generate_image = fake_generate
+    with patch("app.agent.graph.tools.image_gen.GatewayClient", return_value=mock_client):
+        run(image_gen.ainvoke({"prompt": "same prompt", "state": _state()}))
+        run(image_gen.ainvoke({"prompt": "same prompt", "state": _state()}))
+
+    assert payloads[0]["requestId"] == payloads[1]["requestId"]
