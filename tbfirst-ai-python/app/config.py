@@ -90,6 +90,30 @@ class Settings(BaseSettings):
     agent_plan_enabled: bool = False      # M3 Plan-Solve 层
     agent_reflect_enabled: bool = False   # M2 Reflection/Verify 层
     agent_reflexion_enabled: bool = False # M4 Reflexion 长期记忆写入
+    design_agent_enabled: bool = True
+
+    # Design Agent tool gateway. It reuses the authenticated platform gateway.
+    tbfirst_mcp_gateway_url: str = "http://localhost:8000"
+    tbfirst_mcp_auth_mode: str = "header"
+    tbfirst_mcp_token_secret: str = ""
+    tbfirst_mcp_token_map: str = ""
+    tbfirst_mcp_require_employee_mapping: bool = True
+    tbfirst_mcp_tool_timeout_seconds: int = 240
+    tbfirst_mcp_max_images_per_call: int = 5
+    tbfirst_mcp_max_image_bytes: int = 10485760
+    tbfirst_mcp_allowed_image_hosts: str = ""
+    tbfirst_mcp_max_prompt_chars: int = 4000
+    tbfirst_mcp_audit_enabled: bool = True
+    tbfirst_mcp_audit_path: str = "logs/design_tool_audit.jsonl"
+    tbfirst_mcp_user_daily_default: int = 100
+    tbfirst_mcp_group_daily_default: int = 1000
+    tbfirst_mcp_enabled_tools: str = (
+        "tbfirst_check_workspace,"
+        "tbfirst_create_adimage_set,"
+        "tbfirst_image_phase2_refine,"
+        "tbfirst_image_phase2_color,"
+        "tbfirst_image_phase3_banner"
+    )
     # LangGraph + embedding model 配置
     checkpoint_dsn: str = ""
     embedding_model: str = "BAAI/bge-m3"

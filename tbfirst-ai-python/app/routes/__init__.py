@@ -12,6 +12,7 @@ from app.routes.cinestitch import router as cinestitch_router
 from app.routes.agent import router as agent_router
 from app.routes.admin.basic_rules import router as basic_rules_router
 from app.routes.admin.wiki import router as wiki_router
+from app.routes.design import router as design_router
 
 api_router = APIRouter()
 
@@ -26,3 +27,4 @@ api_router.include_router(cinestitch_router)
 api_router.include_router(agent_router)
 api_router.include_router(basic_rules_router)
 api_router.include_router(wiki_router)
+api_router.include_router(design_router)

@@ -27,6 +27,15 @@ async def lifespan(app: FastAPI):
     warn_default_token()
     nacos_client.register()
 
+    if settings.design_agent_enabled:
+        try:
+            from app.db.migrations import run_migrations
+
+            await run_migrations()
+            logger.info("[tbfirst-ai-python] design agent migrations ready")
+        except Exception as e:
+            logger.exception("design agent migration failed (routes may be unavailable): %s", e)
+
     # LangGraph Checkpointer + Store + Agent Graph（优雅降级）：
     # 正常模式有完整的 AI 能力：Agent 对话、RAG 检索、记忆持久化、MCP 调用等，降级模式无 Graph（不执行 Agent 相关功能，但其他功能正常）
 

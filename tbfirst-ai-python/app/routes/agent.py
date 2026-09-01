@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from langchain_core.messages import HumanMessage
 
 from app.config import get_settings
+from app.mcp_server.context import context_from_request
 
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -89,6 +90,10 @@ class ChatRequest(BaseModel):
     brand_id: Optional[int] = None
     group_id: Optional[int] = None
     phase: Optional[str] = None
+    project_uuid: Optional[str] = Field(default=None, max_length=64)
+    asset_ids: list[int] = Field(default_factory=list, max_length=20)
+    selected_artifact_id: Optional[int] = None
+    request_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
 
 
 @router.post("/chat")
@@ -99,6 +104,14 @@ async def chat(
 ) -> StreamingResponse:
     # 1. 校验 session 归属（防越权，错配 → 404 不泄露 uuid 存在性）
     await _session_must_belong_to(req.session_uuid, x_user_id)
+    identity = context_from_request(request)
+    if identity.user_id != str(x_user_id):
+        raise HTTPException(status_code=403, detail="employee identity mismatch")
+    protected_group_id = (
+        int(identity.group_id)
+        if identity.group_id and identity.group_id.isdigit()
+        else None
+    )
 
     # 2. 拿 graph（lifespan 注入；init 失败时为 None → SSE 错误流降级，避免 HTTP 503 导致 Java 代理崩溃）
     graph = getattr(request.app.state, "agent_graph", None)
@@ -127,10 +140,14 @@ async def chat(
     input_state = {
         "messages": [HumanMessage(content=req.message)],
         "user_id": x_user_id,
-        "group_id": req.group_id,
+        # 组织身份只接受网关注入的 header，不能被请求 body 覆盖。
+        "group_id": protected_group_id,
         "brand_id": req.brand_id,
         "session_uuid": req.session_uuid,
         "phase": req.phase,
+        "project_uuid": req.project_uuid,
+        "artifact_ids": req.asset_ids,
+        "selected_artifact_id": req.selected_artifact_id,
     }
 
     async def gen():

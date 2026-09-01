@@ -45,3 +45,16 @@ class AppState(TypedDict):
     _pending_critique: Optional[str]  # 待注入的评估反馈
     _current_subgoal: Optional[str]   # 当前步骤子目标
     plan_mode: Optional[str]          # "plan" | "react" | None
+
+    # 设计域上下文（仅设计项目设置；普通对话保持为空）
+    project_id: Optional[int]
+    project_uuid: Optional[str]
+    run_id: Optional[int]
+    brief: Optional[dict]
+    brief_version: Optional[int]
+    design_plan: Optional[dict]
+    artifact_ids: list[int]
+    selected_artifact_id: Optional[int]
+    pending_action_id: Optional[str]
+    evaluation_report: Optional[dict]
+    generation_calls: int

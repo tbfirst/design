@@ -35,6 +35,14 @@ _DYNAMIC_SECTION_ORDER = [
     "recall",
     "workflow",
     "shared",
+    # 设计任务的结构化真相源。普通 Agent 不设置这些 section，因此行为不变。
+    "design_policy",
+    "project_brief",
+    "brand_rules",
+    "artifact_context",
+    "design_plan",
+    "approval_context",
+    "current_step",
     "subgoal",   # Phase D Plan-Solve：当前步骤子目标（仅动态层，在边界之后）
 ]
 
