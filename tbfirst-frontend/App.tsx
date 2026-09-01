@@ -6,6 +6,7 @@ import Register from './features/Auth/Register';
 import AdminDashboard from './features/Admin/AdminDashboard';
 import GroupDashboard from './features/GroupAdmin/GroupDashboard';
 import AgentPage from './pages/AgentPage';
+import DesignAgentPage from './pages/DesignAgentPage';
 import ProfileMemoryPage from './pages/ProfileMemoryPage';
 import AppHeader from './components/AppHeader';
 import EmbossRevealCanvas from './components/EmbossRevealCanvas';
@@ -68,6 +69,14 @@ function App() {
         <Route element={<WithHeader />}>
           <Route
             path="/agent"
+            element={
+              <ProtectedRoute>
+                <DesignAgentPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/agent/chat"
             element={
               <ProtectedRoute>
                 <AgentPage />
