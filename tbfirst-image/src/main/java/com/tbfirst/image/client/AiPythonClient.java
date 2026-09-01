@@ -88,6 +88,69 @@ public interface AiPythonClient {
     @GetMapping("/agent/tools")
     Map<String, Object> agentListTools();
 
+    // ===== Design Agent（Artifact-centric MVP）=====
+
+    @PostMapping("/agent/design/projects")
+    Map<String, Object> designCreateProject(
+            @RequestHeader Map<String, String> headers,
+            @RequestBody Map<String, Object> payload);
+
+    @GetMapping("/agent/design/projects")
+    Map<String, Object> designListProjects(@RequestHeader Map<String, String> headers);
+
+    @GetMapping("/agent/design/projects/{uuid}")
+    Map<String, Object> designGetProject(
+            @RequestHeader Map<String, String> headers,
+            @PathVariable("uuid") String uuid);
+
+    @PatchMapping("/agent/design/projects/{uuid}/brief")
+    Map<String, Object> designUpdateBrief(
+            @RequestHeader Map<String, String> headers,
+            @PathVariable("uuid") String uuid,
+            @RequestBody Map<String, Object> payload);
+
+    @PostMapping("/agent/design/projects/{uuid}/plans")
+    Map<String, Object> designCreatePlan(
+            @RequestHeader Map<String, String> headers,
+            @PathVariable("uuid") String uuid,
+            @RequestBody Map<String, Object> payload);
+
+    @PostMapping("/agent/design/projects/{uuid}/actions/{actionUuid}/approve")
+    Map<String, Object> designApproveAction(
+            @RequestHeader Map<String, String> headers,
+            @PathVariable("uuid") String uuid,
+            @PathVariable("actionUuid") String actionUuid,
+            @RequestBody Map<String, Object> payload);
+
+    @PostMapping("/agent/design/projects/{uuid}/actions/{actionUuid}/reject")
+    Map<String, Object> designRejectAction(
+            @RequestHeader Map<String, String> headers,
+            @PathVariable("uuid") String uuid,
+            @PathVariable("actionUuid") String actionUuid,
+            @RequestBody Map<String, Object> payload);
+
+    @GetMapping("/agent/design/projects/{uuid}/artifacts")
+    Map<String, Object> designListArtifacts(
+            @RequestHeader Map<String, String> headers,
+            @PathVariable("uuid") String uuid);
+
+    @PostMapping("/agent/design/projects/{uuid}/assets")
+    Map<String, Object> designRegisterAsset(
+            @RequestHeader Map<String, String> headers,
+            @PathVariable("uuid") String uuid,
+            @RequestBody Map<String, Object> payload);
+
+    @PostMapping("/agent/design/projects/{uuid}/artifacts/{artifactId}/select")
+    Map<String, Object> designSelectArtifact(
+            @RequestHeader Map<String, String> headers,
+            @PathVariable("uuid") String uuid,
+            @PathVariable("artifactId") Long artifactId);
+
+    @PostMapping("/agent/design/projects/{uuid}/finalize")
+    Map<String, Object> designFinalize(
+            @RequestHeader Map<String, String> headers,
+            @PathVariable("uuid") String uuid);
+
     /** 列出宪法条目（ADMIN 权限） */
     @GetMapping("/agent/admin/constitution")
     List<Map<String, Object>> agentListConstitution(
