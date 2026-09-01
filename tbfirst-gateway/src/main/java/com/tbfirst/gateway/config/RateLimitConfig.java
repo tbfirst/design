@@ -2,6 +2,8 @@ package com.tbfirst.gateway.config;
 
 import com.tbfirst.common.core.constant.CommonConstants;
 import org.springframework.cloud.gateway.filter.ratelimit.KeyResolver;
+import org.springframework.cloud.gateway.route.Route;
+import org.springframework.cloud.gateway.support.ServerWebExchangeUtils;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import reactor.core.publisher.Mono;
@@ -35,7 +37,15 @@ public class RateLimitConfig {
     public KeyResolver userKeyResolver() {
         return exchange -> {
             String uid = exchange.getRequest().getHeaders().getFirst(CommonConstants.HEADER_USER_ID);
-            return Mono.just((uid == null || uid.isBlank()) ? "anon" : "u:" + uid);
+            Route route = exchange.getAttribute(ServerWebExchangeUtils.GATEWAY_ROUTE_ATTR);
+            String bucket = route == null ? "unrouted" : route.getId();
+            if (uid == null || uid.isBlank()) {
+                String remote = exchange.getRequest().getRemoteAddress() == null
+                        ? "unknown"
+                        : exchange.getRequest().getRemoteAddress().getAddress().getHostAddress();
+                return Mono.just(bucket + ":anon:" + remote);
+            }
+            return Mono.just(bucket + ":u:" + uid);
         };
     }
 }

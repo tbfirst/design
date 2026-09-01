@@ -56,18 +56,40 @@ spring:
                 - Path=/api/auth/**
               filters:
                 - StripPrefix=0
-            # 图片服务路由
-            - id: tbfirst-image
+            # Agent 控制面 / SSE：与普通图片查询分桶，避免轮询流量挤占会话请求。
+            - id: tbfirst-agent
               uri: lb://tbfirst-image
               predicates:
-                - Path=/api/image/**
-              # V5.XVII.K.4：网关侧令牌桶限流（用户级、Redis 后端）。
-              # 配额硬熔断（日额）由 QuotaCheckFilter 提前拦截，本 filter 仅对短时 burst 防护。
+                - Path=/api/image/agent/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 3
+                    redis-rate-limiter.burstCapacity: 12
+                    redis-rate-limiter.requestedTokens: 1
+                    key-resolver: "#{@userKeyResolver}"
+            # 生图写路径：短时 burst 单独保护，日配额由 QuotaCheckFilter 原子扣减。
+            - id: tbfirst-image-generate
+              uri: lb://tbfirst-image
+              predicates:
+                - Path=/api/image/**/generate
               filters:
                 - name: RequestRateLimiter
                   args:
                     redis-rate-limiter.replenishRate: 1
-                    redis-rate-limiter.burstCapacity: 10
+                    redis-rate-limiter.burstCapacity: 4
+                    redis-rate-limiter.requestedTokens: 1
+                    key-resolver: "#{@userKeyResolver}"
+            # 图片查询、任务轮询与素材管理：高吞吐独立桶。
+            - id: tbfirst-image
+              uri: lb://tbfirst-image
+              predicates:
+                - Path=/api/image/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    redis-rate-limiter.replenishRate: 10
+                    redis-rate-limiter.burstCapacity: 30
                     redis-rate-limiter.requestedTokens: 1
                     key-resolver: "#{@userKeyResolver}"
             # 视频拼接服务路由

@@ -7,6 +7,8 @@ import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.server.reactive.ServerHttpRequest;
@@ -15,47 +17,42 @@ import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HexFormat;
+import java.util.List;
 
-/**
- * 生图日额配额硬熔断（V5.XVII.K.4 + K.9）。
- *
- * <p>定位：在 {@link AuthGlobalFilter}（Order=-100）之后、RequestRateLimiter（Order≈10000）之前
- * 拦截 {@code /api/image\/**\/generate} 的所有调用，按 {@code X-User-Personal-Cap} JWT claim 做日额硬熔断。</p>
- *
- * <p>K.9 设计调整：</p>
- * <ul>
- *   <li><b>移除 X-Image-Step 信任路径</b>：原设计想让 DNA 不计入配额，依赖客户端发 header；
- *       但 (a) 前端从未发该 header → 误伤；(b) 任何客户端都能伪造该 header → 形同虚设。
- *       现统一计入配额，cap 调高到 200 以容纳 DNA 实验所需的次数。</li>
- *   <li><b>cap=0 表示吊销</b>：parseCap 不再把 0 当作"无效值落回 default"，
- *       admin 可签发 personalModelCap=0 的 JWT 立即阻断特定用户。</li>
- *   <li><b>拒绝时 DECR 回滚</b>：避免被锁用户疯狂重试导致计数虚高、429 body 中 used 失真。</li>
- *   <li><b>时区配置化</b>：{@code app.quota.image.zone}（默认 Asia/Shanghai），
- *       不再依赖容器 JVM 默认时区，配额"日重置"对齐用户体感时间。</li>
- * </ul>
- *
- * <p>放行场景：</p>
- * <ul>
- *   <li>非 {@code /api/image/**}/generate：本过滤器不参与</li>
- *   <li>未注入 X-User-Id：白名单 / 异常态，放行交下游处理</li>
- *   <li>Redis 不可达：fail-open + WARN，避免 Redis 抖动导致全站 429</li>
- * </ul>
- *
- * <p>计数 key：{@code tbfirst:quota:image:user:{uid}:{yyyyMMdd}}（日期按配置时区）。</p>
- */
+/** Atomic daily image quota with idempotent retries. */
 @Slf4j
 @Component
 public class QuotaCheckFilter implements GlobalFilter, Ordered {
 
     private static final String QUOTA_KEY_PREFIX = "tbfirst:quota:image:user:";
+    private static final String DEDUPE_KEY_PREFIX = "tbfirst:quota:image:dedupe:";
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyyMMdd");
-    /** 代码层最终兜底（配置中心、application.yml 都没值时）。K.9 从 100 拉到 200 以容纳 DNA 实验。 */
     private static final long DEFAULT_USER_CAP_FALLBACK = 200L;
+
+    @SuppressWarnings("rawtypes")
+    private static final DefaultRedisScript<List> CONSUME_SCRIPT = new DefaultRedisScript<>("""
+            local cap = tonumber(ARGV[1])
+            local ttl = tonumber(ARGV[2])
+            local dedupe = tonumber(ARGV[3])
+            local current = tonumber(redis.call('GET', KEYS[1]) or '0')
+            if dedupe == 1 and redis.call('EXISTS', KEYS[2]) == 1 then
+              return {1, current, math.max(0, cap - current), 1}
+            end
+            if current >= cap then
+              return {0, current, 0, 0}
+            end
+            current = redis.call('INCR', KEYS[1])
+            if current == 1 then redis.call('PEXPIRE', KEYS[1], ttl) end
+            if dedupe == 1 then redis.call('SET', KEYS[2], '1', 'PX', ttl, 'NX') end
+            return {1, current, math.max(0, cap - current), 0}
+            """, List.class);
 
     private final ReactiveStringRedisTemplate redis;
     private final long userDailyDefault;
@@ -66,76 +63,74 @@ public class QuotaCheckFilter implements GlobalFilter, Ordered {
             @Value("${app.quota.image.user-daily-default:200}") long userDailyDefault,
             @Value("${app.quota.image.zone:Asia/Shanghai}") String zoneIdStr) {
         this.redis = redis;
-        // K.9: 允许 cap=0=吊销；只有 < 0 / 解析失败才落回 default
         this.userDailyDefault = userDailyDefault >= 0 ? userDailyDefault : DEFAULT_USER_CAP_FALLBACK;
         this.zoneIdStr = zoneIdStr;
     }
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
-        ServerHttpRequest req = exchange.getRequest();
-        String path = req.getURI().getPath();
-
-        // 只关注生图主干路径
+        ServerHttpRequest request = exchange.getRequest();
+        String path = request.getURI().getPath();
         if (!path.startsWith("/api/image/") || !path.endsWith("/generate")) {
             return chain.filter(exchange);
         }
 
-        String uid = req.getHeaders().getFirst(CommonConstants.HEADER_USER_ID);
+        String uid = request.getHeaders().getFirst(CommonConstants.HEADER_USER_ID);
         if (uid == null || uid.isBlank()) {
-            // 白名单已在 AuthGlobalFilter 处理；这里到达说明是已鉴权请求但缺 UID → 异常状态，放行交下游
             return chain.filter(exchange);
         }
 
-        long cap = parseCap(req.getHeaders().getFirst(CommonConstants.HEADER_USER_PERSONAL_CAP), userDailyDefault);
-        // K.9: cap=0 表示吊销，不需要 INCR，直接 reject
+        long cap = parseCap(
+                request.getHeaders().getFirst(CommonConstants.HEADER_USER_PERSONAL_CAP),
+                userDailyDefault
+        );
         if (cap == 0L) {
-            log.warn("[Quota] user={} cap=0 (revoked)", uid);
-            return reject429(exchange, 0L, 0L);
+            return reject429(exchange, 0, 0, 60);
         }
 
         ZoneId zone = resolveZone();
-        String key = QUOTA_KEY_PREFIX + uid + ":" + LocalDate.now(zone).format(DATE_FMT);
+        String day = LocalDate.now(zone).format(DATE_FMT);
+        long ttlMillis = ttlUntilTomorrow(zone).toMillis();
+        String quotaKey = QUOTA_KEY_PREFIX + uid + ":" + day;
+        String idempotencyKey = request.getHeaders().getFirst("Idempotency-Key");
+        boolean dedupe = idempotencyKey != null && !idempotencyKey.isBlank();
+        String dedupeKey = dedupe
+                ? DEDUPE_KEY_PREFIX + uid + ":" + sha256(path + "\n" + idempotencyKey)
+                : DEDUPE_KEY_PREFIX + "disabled:" + uid;
 
-        return redis.opsForValue().increment(key)
-                .flatMap(count -> {
-                    // 首次 INCR（counter=1）才设过期到次日凌晨，避免每次都续期
-                    Mono<Boolean> ttlSetup = (count != null && count == 1L)
-                            ? redis.expire(key, ttlUntilTomorrow(zone))
-                            : Mono.just(true);
-                    return ttlSetup.then(Mono.defer(() -> {
-                        long c = count == null ? 0 : count;
-                        if (c > cap) {
-                            log.warn("[Quota] user={} reached daily cap, count={}/{}", uid, c, cap);
-                            // K.9: 回滚刚才的 INCR，避免被锁用户疯狂重试导致计数虚高
-                            return redis.opsForValue().decrement(key)
-                                    .onErrorResume(de -> {
-                                        log.warn("[Quota] decrement on reject failed user={}: {}", uid, de.getMessage());
-                                        return Mono.just(0L);
-                                    })
-                                    .then(reject429(exchange, cap, c));
-                        }
-                        log.debug("[Quota] user={} count={}/{}", uid, c, cap);
-                        return chain.filter(exchange);
-                    }));
+        return redis.execute(
+                        CONSUME_SCRIPT,
+                        List.of(quotaKey, dedupeKey),
+                        String.valueOf(cap),
+                        String.valueOf(ttlMillis),
+                        dedupe ? "1" : "0"
+                )
+                .next()
+                .flatMap(raw -> {
+                    QuotaResult result = QuotaResult.from(raw);
+                    setRateHeaders(exchange, cap, result.remaining(), ttlMillis);
+                    if (!result.allowed()) {
+                        long retryAfter = Math.max(1, (ttlMillis + 999) / 1000);
+                        log.warn("[Quota] user={} exhausted daily image quota used={}/{}", uid, result.used(), cap);
+                        return reject429(exchange, cap, result.used(), retryAfter);
+                    }
+                    if (result.duplicate()) {
+                        log.debug("[Quota] idempotent retry was not charged user={} path={}", uid, path);
+                    }
+                    return chain.filter(exchange);
                 })
-                .onErrorResume(e -> {
-                    // fail-open：Redis 抖动不应导致全站 429
-                    log.warn("[Quota] redis unavailable, fail-open user={}: {}", uid, e.getMessage());
+                .switchIfEmpty(Mono.defer(() -> chain.filter(exchange)))
+                .onErrorResume(error -> {
+                    log.warn("[Quota] redis unavailable, fail-open user={}: {}", uid, error.getMessage());
                     return chain.filter(exchange);
                 });
     }
 
-    /**
-     * 解析 JWT claim 透传的 personalModelCap header。
-     * 优先级：header > 配置 (app.quota.image.user-daily-default) > 代码兜底 DEFAULT_USER_CAP_FALLBACK。
-     * K.9: 允许 v=0 表示吊销；只有 v<0 或解析失败才落回 default。
-     */
-    private static long parseCap(String s, long defaultCap) {
-        if (s == null || s.isBlank()) return defaultCap;
+    static long parseCap(String value, long defaultCap) {
+        if (value == null || value.isBlank()) return defaultCap;
         try {
-            long v = Long.parseLong(s.trim());
-            return v >= 0 ? v : defaultCap;
+            long parsed = Long.parseLong(value.trim());
+            return parsed >= 0 ? parsed : defaultCap;
         } catch (NumberFormatException ignored) {
             return defaultCap;
         }
@@ -144,34 +139,68 @@ public class QuotaCheckFilter implements GlobalFilter, Ordered {
     private ZoneId resolveZone() {
         try {
             return ZoneId.of(zoneIdStr);
-        } catch (Exception e) {
-            log.warn("[Quota] invalid app.quota.image.zone='{}', falling back to systemDefault", zoneIdStr);
-            return ZoneId.systemDefault();
+        } catch (Exception error) {
+            log.warn("[Quota] invalid zone '{}', falling back to UTC", zoneIdStr);
+            return ZoneId.of("UTC");
         }
     }
 
-    private static Duration ttlUntilTomorrow(ZoneId zone) {
+    static Duration ttlUntilTomorrow(ZoneId zone) {
         ZonedDateTime now = ZonedDateTime.now(zone);
-        ZonedDateTime tomorrowMidnight = now.toLocalDate().plusDays(1).atStartOfDay(zone);
-        Duration d = Duration.between(now, tomorrowMidnight);
-        // 防御：万一时间倒挂给个最小 60s
-        return d.isNegative() || d.isZero() ? Duration.ofSeconds(60) : d;
+        ZonedDateTime tomorrow = now.toLocalDate().plusDays(1).atStartOfDay(zone);
+        Duration duration = Duration.between(now, tomorrow);
+        return duration.isNegative() || duration.isZero() ? Duration.ofSeconds(60) : duration;
     }
 
-    private static Mono<Void> reject429(ServerWebExchange ex, long cap, long count) {
-        ex.getResponse().setStatusCode(HttpStatus.TOO_MANY_REQUESTS);
-        ex.getResponse().getHeaders().setContentType(MediaType.APPLICATION_JSON);
-        String body = "{\"code\":429,\"msg\":\"daily image quota exceeded\",\"cap\":" + cap
-                + ",\"used\":" + count + "}";
+    private static void setRateHeaders(
+            ServerWebExchange exchange, long cap, long remaining, long resetMillis) {
+        HttpHeaders headers = exchange.getResponse().getHeaders();
+        headers.set("X-RateLimit-Limit", String.valueOf(cap));
+        headers.set("X-RateLimit-Remaining", String.valueOf(Math.max(0, remaining)));
+        headers.set("X-RateLimit-Reset", String.valueOf((resetMillis + 999) / 1000));
+    }
+
+    private static Mono<Void> reject429(
+            ServerWebExchange exchange, long cap, long used, long retryAfterSeconds) {
+        exchange.getResponse().setStatusCode(HttpStatus.TOO_MANY_REQUESTS);
+        exchange.getResponse().getHeaders().setContentType(MediaType.APPLICATION_JSON);
+        exchange.getResponse().getHeaders().set(HttpHeaders.RETRY_AFTER, String.valueOf(retryAfterSeconds));
+        String body = "{\"code\":429,\"msg\":\"daily image quota exceeded\",\"cap\":"
+                + cap + ",\"used\":" + used + ",\"retryAfterSeconds\":" + retryAfterSeconds + "}";
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-        return ex.getResponse().writeWith(Mono.just(ex.getResponse().bufferFactory().wrap(bytes)));
+        return exchange.getResponse().writeWith(
+                Mono.just(exchange.getResponse().bufferFactory().wrap(bytes))
+        );
     }
 
-    /**
-     * Order = -50：在 AuthGlobalFilter（-100，注入 X-User-*）之后、
-     * Spring Cloud Gateway 内置 RequestRateLimiter（默认 10000+）之前执行。
-     * 这样配额判定基于 JWT 已校验的真实用户，配额拒绝早于令牌桶消耗。
-     */
+    private static String sha256(String value) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))
+            );
+        } catch (Exception impossible) {
+            throw new IllegalStateException("SHA-256 unavailable", impossible);
+        }
+    }
+
+    private record QuotaResult(boolean allowed, long used, long remaining, boolean duplicate) {
+        static QuotaResult from(List<?> raw) {
+            if (raw == null || raw.size() < 4) {
+                throw new IllegalStateException("invalid quota script response");
+            }
+            return new QuotaResult(
+                    number(raw.get(0)) == 1,
+                    number(raw.get(1)),
+                    number(raw.get(2)),
+                    number(raw.get(3)) == 1
+            );
+        }
+
+        private static long number(Object value) {
+            return value instanceof Number n ? n.longValue() : Long.parseLong(String.valueOf(value));
+        }
+    }
+
     @Override
     public int getOrder() {
         return -50;
