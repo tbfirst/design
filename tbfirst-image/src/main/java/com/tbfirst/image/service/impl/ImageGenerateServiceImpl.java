@@ -16,13 +16,13 @@ import com.tbfirst.image.dto.HistoryDtos;
 import com.tbfirst.image.dto.InpaintDtos;
 import com.tbfirst.image.entity.GenerationJob;
 import com.tbfirst.image.mapper.GenerationJobMapper;
+import com.tbfirst.image.resilience.TimedCircuitBreaker;
 import com.tbfirst.image.service.AuditLogService;
 import com.tbfirst.image.service.ImageGenerateService;
-import io.github.resilience4j.circuitbreaker.CircuitBreaker;
-import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -77,14 +77,23 @@ public class ImageGenerateServiceImpl implements ImageGenerateService {
     private final TransactionTemplate txTemplate;
     /** 生图异步线程池（见 ImageAsyncConfig）；按 bean 名 imageGenExecutor 注入 */
     private final ThreadPoolTaskExecutor imageGenExecutor;
-    /** 熔断注册表（resilience4j）；ai-python 持续不可用时让生图任务快速失败 */
-    private final CircuitBreakerRegistry circuitBreakerRegistry;
+    /** 时间驱动三态熔断；不按调用次数切换状态。 */
+    private final TimedCircuitBreaker aiPythonGenerateCircuitBreaker;
 
     public GenerateDtos.GenerateResponse generate(GenerateDtos.GenerateRequest req) {
         Long uid = UserContextHolder.currentUserId();
         if (uid == null) {
             log.warn("[Image] generate rejected: UserContextHolder.currentUserId() is null");
             throw new BizException(ErrorCode.UNAUTHORIZED, "missing user context, please re-login via gateway");
+        }
+        String requestId = normalizeRequestId(req.getRequestId());
+        req.setRequestId(requestId);
+        if (requestId != null) {
+            GenerationJob existing = findByRequestId(uid, requestId);
+            if (existing != null) {
+                log.info("[Image] idempotent replay userId={} requestId={} jobId={}", uid, requestId, existing.getId());
+                return toGenerateResponse(existing);
+            }
         }
         log.info("[Image] generate for userId={} phase={}", uid, req.getPhase());
         // 捕获请求线程的用户上下文，传给后台线程重建（审计 / MetaObjectHandler 的 create_by/update_by 依赖它）
@@ -93,28 +102,41 @@ public class ImageGenerateServiceImpl implements ImageGenerateService {
 
         // ── 短事务①：INSERT pending，立即提交释放连接 ──────────────────────────────
         // SQL: INSERT INTO image.generation_job (...) VALUES (..., 'pending', ...)
-        final GenerationJob job = Objects.requireNonNull(txTemplate.execute(status -> {
-            GenerationJob j = new GenerationJob();
-            j.setPhase(req.getPhase());
-            j.setPrompt(req.getPrompt());
-            j.setModel(req.getModel());
-            j.setUserId(uid);
-            j.setGroupId(groupId);
-            j.setStatus("pending");
-            j.setLastAccessAt(LocalDateTime.now());
-            if (req.getPhaseConfig() != null) {
-                try {
-                    j.setPhaseConfig(objectMapper.writeValueAsString(req.getPhaseConfig()));
-                } catch (Exception ex) {
-                    log.warn("[Image] serialize phaseConfig failed", ex);
+        GenerationJob inserted;
+        try {
+            inserted = Objects.requireNonNull(txTemplate.execute(status -> {
+                GenerationJob j = new GenerationJob();
+                j.setPhase(req.getPhase());
+                j.setPrompt(req.getPrompt());
+                j.setModel(req.getModel());
+                j.setUserId(uid);
+                j.setRequestId(requestId);
+                j.setGroupId(groupId);
+                j.setStatus("pending");
+                j.setLastAccessAt(LocalDateTime.now());
+                if (req.getPhaseConfig() != null) {
+                    try {
+                        j.setPhaseConfig(objectMapper.writeValueAsString(req.getPhaseConfig()));
+                    } catch (Exception ex) {
+                        log.warn("[Image] serialize phaseConfig failed", ex);
+                    }
                 }
+                if (req.getReferenceImages() != null) {
+                    j.setReferenceCount(req.getReferenceImages().size());
+                }
+                mapper.insert(j);
+                return j;
+            }));
+        } catch (DuplicateKeyException duplicate) {
+            GenerationJob existing = requestId == null ? null : findByRequestId(uid, requestId);
+            if (existing != null) {
+                log.info("[Image] concurrent idempotent replay userId={} requestId={} jobId={}",
+                        uid, requestId, existing.getId());
+                return toGenerateResponse(existing);
             }
-            if (req.getReferenceImages() != null) {
-                j.setReferenceCount(req.getReferenceImages().size());
-            }
-            mapper.insert(j);
-            return j;
-        }));
+            throw duplicate;
+        }
+        final GenerationJob job = inserted;
 
         // ── 派发后台异步出图；池满则即时标 failed 并回错，避免 job 永久 pending ──────────
         try {
@@ -135,11 +157,7 @@ public class ImageGenerateServiceImpl implements ImageGenerateService {
         }
 
         // ── 立即返回 pending（不等待 AI）；前端凭 jobId 轮询 GET /jobs/{id}/status ──────
-        GenerateDtos.GenerateResponse resp = new GenerateDtos.GenerateResponse();
-        resp.setJobId(job.getId());
-        resp.setStatus("pending");
-        resp.setUrls(List.of());
-        return resp;
+        return toGenerateResponse(job);
     }
 
     /**
@@ -168,10 +186,8 @@ public class ImageGenerateServiceImpl implements ImageGenerateService {
                 if (req.getPhaseConfig() != null) payload.put("phase_config", req.getPhaseConfig());
                 if (req.getExtra() != null) payload.putAll(req.getExtra());
 
-                // 熔断保护：ai-python 持续故障 → 熔断器 OPEN 后 executeSupplier 直接抛
-                // CallNotPermittedException 快速失败，不再白等 600s Feign 超时占线程。
-                CircuitBreaker cb = circuitBreakerRegistry.circuitBreaker("ai-python-generate");
-                Map<String, Object> raw = cb.executeSupplier(() -> aiClient.generate(payload));
+                Map<String, Object> raw = aiPythonGenerateCircuitBreaker.execute(
+                        () -> aiClient.generate(payload));
                 List<String> persistedUrls = persistImages(parseUrls(raw), req.getPhase());
 
                 // ── 短事务②：UPDATE success（图片走 asset_urls；文本结果落 result_text）──
@@ -230,6 +246,10 @@ public class ImageGenerateServiceImpl implements ImageGenerateService {
             // 故意返 NOT_FOUND 而非 FORBIDDEN，避免暴露存在性（与 refreshJobUrls 一致）。
             throw new BizException(ErrorCode.NOT_FOUND, "job not found or not accessible");
         }
+        return toGenerateResponse(job);
+    }
+
+    private GenerateDtos.GenerateResponse toGenerateResponse(GenerationJob job) {
         GenerateDtos.GenerateResponse resp = new GenerateDtos.GenerateResponse();
         resp.setJobId(job.getId());
         resp.setStatus(job.getStatus());
@@ -239,6 +259,24 @@ public class ImageGenerateServiceImpl implements ImageGenerateService {
         resp.setRawResponse(job.getResultText());
         resp.setErrorMsg(job.getErrorMsg());
         return resp;
+    }
+
+    private GenerationJob findByRequestId(Long userId, String requestId) {
+        return mapper.selectOne(new LambdaQueryWrapper<GenerationJob>()
+                .eq(GenerationJob::getUserId, userId)
+                .eq(GenerationJob::getRequestId, requestId)
+                .last("LIMIT 1"));
+    }
+
+    private static String normalizeRequestId(String requestId) {
+        if (requestId == null || requestId.isBlank()) {
+            return null;
+        }
+        String normalized = requestId.trim();
+        if (normalized.length() > 128) {
+            throw new BizException(ErrorCode.BAD_REQUEST, "requestId must not exceed 128 characters");
+        }
+        return normalized;
     }
 
     public InpaintDtos.InpaintResponse inpaint(InpaintDtos.InpaintRequest req) {

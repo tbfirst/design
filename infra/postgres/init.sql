@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS image.generation_job (
     id              BIGSERIAL    PRIMARY KEY,
     phase           VARCHAR(32)  NOT NULL,                 -- phase0 / phase1 / phase2 / inpaint / color
     user_id         BIGINT,
+    request_id      VARCHAR(128),                          -- 跨服务重试幂等键（用户内唯一）
     model           VARCHAR(64),                           -- Gemini 模型名
     prompt          TEXT,
     asset_urls      TEXT,                                  -- 多个静态 URL，换行分隔
@@ -178,6 +179,8 @@ CREATE TABLE IF NOT EXISTS image.generation_job (
 CREATE INDEX IF NOT EXISTS idx_generation_job_user        ON image.generation_job(user_id);
 CREATE INDEX IF NOT EXISTS idx_generation_job_phase       ON image.generation_job(phase);
 CREATE INDEX IF NOT EXISTS idx_generation_job_last_access ON image.generation_job(last_access_at) WHERE deleted = 0;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_generation_job_user_request
+    ON image.generation_job(user_id, request_id) WHERE request_id IS NOT NULL AND deleted = 0;
 
 -- V5 追加：历史生图组互见（null = 仅作者可见；非 null = 同组互见）
 ALTER TABLE image.generation_job ADD COLUMN IF NOT EXISTS group_id BIGINT;

@@ -148,6 +148,12 @@ app:
   # Python AI 服务直连地址（配置后不走 Nacos 发现）
   ai-python:
     url: ${AI_PYTHON_URL:http://localhost:8200}
+    connect-timeout: ${AI_PYTHON_CONNECT_TIMEOUT:10s}
+    response-timeout: ${AI_PYTHON_RESPONSE_TIMEOUT:30s}
+  resilience:
+    ai-python:
+      initial-open-duration: ${AI_PYTHON_CIRCUIT_INITIAL_OPEN:15s}
+      max-open-duration: ${AI_PYTHON_CIRCUIT_MAX_OPEN:120s}
 
 logging:
   level:
@@ -159,23 +165,6 @@ logging:
     # mapper 层的 SQL trace 噪音。
     com.tbfirst.image.mapper: INFO
     com.tbfirst.auth.mapper: INFO
-
-# 韧性：ai-python 生图调用熔断（见 ImageGenerateServiceImpl.runGenerateJob）。
-# 异步化后 AI 调用在 imageGenExecutor 线程执行；熔断的价值是 ai-python 持续不可用时快速失败，
-# 避免每个任务白占线程等满 600s Feign 超时。用原生 registry.executeSupplier，只套熔断不加时限。
-resilience4j:
-  circuitbreaker:
-    instances:
-      ai-python-generate:
-        register-health-indicator: true
-        sliding-window-type: COUNT_BASED
-        sliding-window-size: 10
-        minimum-number-of-calls: 5          # 至少 5 次调用才开始算失败率
-        failure-rate-threshold: 50          # 失败率 ≥50% → OPEN
-        wait-duration-in-open-state: 30s    # OPEN 后 30s 进 HALF_OPEN 试探
-        permitted-number-of-calls-in-half-open-state: 3
-        slow-call-duration-threshold: 120s  # 单次 >120s 视为慢调用，计入失败
-        slow-call-rate-threshold: 80
 
 # Actuator：暴露 health/info 端点（含 GCS 健康子项 /actuator/health/gcs）
 # show-details: always 让 health 输出 components 详情，便于排查 GCS 鉴权 / 桶可达性问题。

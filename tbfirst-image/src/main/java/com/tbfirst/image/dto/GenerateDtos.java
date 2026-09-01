@@ -18,6 +18,8 @@ public class GenerateDtos {
     public static class GenerateRequest {
         @NotBlank
         private String prompt;
+        /** 跨网关重试幂等键；同一用户下唯一，最长 128 字符。 */
+        private String requestId;
         // todo 之后改为使用模型链，前端传入一个模型列表，后端根据模型列表调用不同的模型，在不指定模型时使用默认模型（如 "gemini-2.5-flash-image"）
         private String model = "gemini-2.5-flash-image";
         /** 阶段标识：phase0 / phase1 / phase2 / phase2Color */

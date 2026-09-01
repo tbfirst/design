@@ -15,6 +15,7 @@ public class McpDtos {
     public static class ImageGenerateRequest {
         @NotBlank
         private String prompt;
+        private String requestId;
         private List<String> productImages;
         private String templateImage;
         private List<String> referenceImages;

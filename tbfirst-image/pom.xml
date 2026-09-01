@@ -118,17 +118,6 @@
             <artifactId>spring-cloud-starter-alibaba-nacos-config</artifactId>
         </dependency>
 
-        <!-- ============ 韧性：熔断 ============ -->
-        <!-- Resilience4j 原生 starter（自动装配 CircuitBreakerRegistry，读取 resilience4j.* 配置）。
-             刻意不用 spring-cloud-starter-circuitbreaker-resilience4j：其 CircuitBreakerFactory.run
-             默认带 1s TimeLimiter，会把 60-600s 的生图调用直接判超时。这里用 registry.executeSupplier
-             只套熔断、不加时限。版本不在现有 BOM 管理范围，显式锁定。 -->
-        <dependency>
-            <groupId>io.github.resilience4j</groupId>
-            <artifactId>resilience4j-spring-boot3</artifactId>
-            <version>2.2.0</version>
-        </dependency>
-
         <!-- ============ 其他 ============ -->
         <dependency>
             <groupId>org.springdoc</groupId>
@@ -138,6 +127,11 @@
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
             <optional>true</optional>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 

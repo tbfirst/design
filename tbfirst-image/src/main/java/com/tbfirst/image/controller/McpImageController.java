@@ -74,6 +74,7 @@ public class McpImageController {
     private static GenerateDtos.GenerateRequest toGenerateRequest(McpDtos.ImageGenerateRequest req) {
         GenerateDtos.GenerateRequest generate = new GenerateDtos.GenerateRequest();
         generate.setPrompt(buildPrompt(req));
+        generate.setRequestId(req.getRequestId());
         generate.setModel(defaultString(req.getModel(), "gemini-3.1-flash-image"));
         generate.setPhase(defaultString(req.getPhase(), "phase3"));
         generate.setReferenceImages(mergeReferences(req));

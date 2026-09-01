@@ -1,16 +1,23 @@
 package com.tbfirst.image.controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tbfirst.common.core.response.R;
 import com.tbfirst.image.client.AiPythonClient;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpServletRequest;
-import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -19,17 +26,31 @@ import java.util.Map;
  * V6.M2.F.4: Agent 路由转发（/api/image/agent/*）。
  *
  * 非 SSE 端点：通过 AiPythonClient Feign 转发，用 R.ok() 包装成统一响应格式。
- * SSE 聊天端点：使用 HttpURLConnection 代理流式响应，绕过 Feign 不支持 SSE 的限制。
+ * SSE 端点：使用进程级 JDK HttpClient 连接池代理流式响应，绕过 Feign 不支持 SSE 的限制。
  */
 @RestController
-@RequiredArgsConstructor
+@Slf4j
 @RequestMapping("/api/image/agent")
 public class AgentController {
 
     private final AiPythonClient aiPythonClient;
+    private final HttpClient agentHttpClient;
+    private final ObjectMapper objectMapper;
 
     @Value("${app.ai-python.url:http://localhost:8200}")
     private String aiPythonUrl;
+
+    @Value("${app.ai-python.response-timeout:30s}")
+    private Duration responseTimeout;
+
+    public AgentController(
+            AiPythonClient aiPythonClient,
+            @Qualifier("agentHttpClient") HttpClient agentHttpClient,
+            ObjectMapper objectMapper) {
+        this.aiPythonClient = aiPythonClient;
+        this.agentHttpClient = agentHttpClient;
+        this.objectMapper = objectMapper;
+    }
 
     // ===== Sessions =====
 
@@ -63,7 +84,7 @@ public class AgentController {
         return R.ok();
     }
 
-    // ===== Chat (SSE proxy — Feign 不支持流式 SSE，直接用 HttpURLConnection 透传) =====
+    // ===== Chat (SSE proxy) =====
 
     @PostMapping(value = "/chat", produces = "text/event-stream;charset=UTF-8")
     public void chat(
@@ -71,40 +92,7 @@ public class AgentController {
             @RequestHeader(value = "X-User-Id", required = false) Long userId,
             HttpServletRequest request,
             HttpServletResponse response) throws IOException {
-        response.setContentType("text/event-stream;charset=UTF-8");
-        response.setCharacterEncoding("UTF-8");
-        response.setBufferSize(0);
-        response.setHeader("Cache-Control", "no-cache");
-        response.setHeader("X-Accel-Buffering", "no");
-        try {
-            HttpURLConnection conn = (HttpURLConnection) new URL(aiPythonUrl + "/agent/chat").openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json");
-            if (userId != null) conn.setRequestProperty("X-User-Id", userId.toString());
-            copyForwardHeaders(conn, request);
-            conn.setReadTimeout(600_000);
-            conn.setConnectTimeout(10_000);
-            conn.setDoOutput(true);
-            conn.getOutputStream().write(rawBody);
-            conn.getOutputStream().flush();
-            byte[] buf = new byte[64];
-            int n;
-            jakarta.servlet.ServletOutputStream out = response.getOutputStream();
-            try (java.io.InputStream in = conn.getInputStream()) {
-                while ((n = in.read(buf)) != -1) {
-                    out.write(buf, 0, n);
-                    out.flush();
-                    response.flushBuffer();
-                }
-            }
-        } catch (IOException e) {
-            String detail = e.getMessage() != null ? e.getMessage().replace("\"", "'") : "upstream error";
-            byte[] errBytes = ("data: {\"type\":\"error\",\"detail\":\"" + detail + "\"}\n\n"
-                    + "data: [DONE]\n\n")
-                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            response.getOutputStream().write(errBytes);
-            response.getOutputStream().flush();
-        }
+        proxySse("/agent/chat", rawBody, request, response, "error");
     }
 
     // ===== Profile Memory =====
@@ -205,7 +193,8 @@ public class AgentController {
                 "/agent/design/projects/" + uuid + "/runs/" + runId + "/execute",
                 new byte[0],
                 request,
-                response);
+                response,
+                "run_failed");
     }
 
     @GetMapping("/design/projects/{uuid}/artifacts")
@@ -278,7 +267,9 @@ public class AgentController {
             "X-User-Name",
             "X-User-Roles",
             "X-User-Group-Id",
-            "X-User-Group-Role"
+            "X-User-Group-Role",
+            "Idempotency-Key",
+            "X-MCP-Request-Id"
     );
 
     private Map<String, String> forwardHeaders(HttpServletRequest request) {
@@ -292,47 +283,99 @@ public class AgentController {
         return headers;
     }
 
-    private void copyForwardHeaders(HttpURLConnection conn, HttpServletRequest request) {
-        forwardHeaders(request).forEach(conn::setRequestProperty);
-    }
-
     private void proxySse(
             String upstreamPath,
             byte[] rawBody,
             HttpServletRequest request,
-            HttpServletResponse response) throws IOException {
+            HttpServletResponse response,
+            String errorType) throws IOException {
         response.setContentType("text/event-stream;charset=UTF-8");
         response.setCharacterEncoding("UTF-8");
-        response.setBufferSize(0);
+        response.setBufferSize(8192);
         response.setHeader("Cache-Control", "no-cache");
         response.setHeader("X-Accel-Buffering", "no");
+
+        HttpRequest.Builder upstreamRequest = HttpRequest.newBuilder()
+                .uri(URI.create(aiPythonUrl + upstreamPath))
+                .timeout(responseTimeout)
+                .header("Content-Type", "application/json")
+                .header("Accept", "text/event-stream")
+                .POST(HttpRequest.BodyPublishers.ofByteArray(rawBody));
+        forwardHeaders(request).forEach(upstreamRequest::header);
+
+        HttpResponse<InputStream> upstream;
         try {
-            HttpURLConnection conn = (HttpURLConnection) new URL(aiPythonUrl + upstreamPath).openConnection();
-            conn.setRequestMethod("POST");
-            conn.setRequestProperty("Content-Type", "application/json");
-            copyForwardHeaders(conn, request);
-            conn.setReadTimeout(600_000);
-            conn.setConnectTimeout(10_000);
-            conn.setDoOutput(true);
-            conn.getOutputStream().write(rawBody);
-            conn.getOutputStream().flush();
-            byte[] buf = new byte[256];
-            int n;
+            upstream = agentHttpClient.send(upstreamRequest.build(), HttpResponse.BodyHandlers.ofInputStream());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            writeSseError(response, errorType, "upstream request interrupted", null);
+            return;
+        } catch (IOException | RuntimeException e) {
+            writeSseError(response, errorType, safeMessage(e), null);
+            return;
+        }
+
+        try (InputStream in = upstream.body()) {
+            if (upstream.statusCode() < 200 || upstream.statusCode() >= 300) {
+                String body = new String(in.readNBytes(4096), StandardCharsets.UTF_8);
+                String detail = body.isBlank()
+                        ? "upstream returned HTTP " + upstream.statusCode()
+                        : body;
+                writeSseError(response, errorType, detail, upstream.statusCode());
+                return;
+            }
+
+            byte[] buffer = new byte[8192];
             jakarta.servlet.ServletOutputStream out = response.getOutputStream();
-            try (java.io.InputStream in = conn.getInputStream()) {
-                while ((n = in.read(buf)) != -1) {
-                    out.write(buf, 0, n);
+            while (true) {
+                final int read;
+                try {
+                    read = in.read(buffer);
+                } catch (IOException e) {
+                    writeSseError(response, errorType, safeMessage(e), upstream.statusCode());
+                    return;
+                }
+                if (read == -1) {
+                    return;
+                }
+                try {
+                    out.write(buffer, 0, read);
                     out.flush();
-                    response.flushBuffer();
+                } catch (IOException clientDisconnected) {
+                    log.debug("SSE client disconnected: path={}", upstreamPath);
+                    return;
                 }
             }
-        } catch (IOException e) {
-            String detail = e.getMessage() != null ? e.getMessage().replace("\"", "'") : "upstream error";
-            byte[] errBytes = ("data: {\"type\":\"run_failed\",\"error\":\"" + detail + "\"}\n\n"
-                    + "data: [DONE]\n\n")
-                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
-            response.getOutputStream().write(errBytes);
-            response.getOutputStream().flush();
         }
+    }
+
+    private void writeSseError(
+            HttpServletResponse response,
+            String errorType,
+            String detail,
+            Integer upstreamStatus) {
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("type", errorType);
+            payload.put("detail", detail);
+            if ("run_failed".equals(errorType)) {
+                payload.put("error", detail);
+            }
+            if (upstreamStatus != null) {
+                payload.put("upstream_status", upstreamStatus);
+            }
+            String event = "data: " + objectMapper.writeValueAsString(payload) + "\n\n"
+                    + "data: [DONE]\n\n";
+            response.getOutputStream().write(event.getBytes(StandardCharsets.UTF_8));
+            response.getOutputStream().flush();
+        } catch (IOException clientDisconnected) {
+            log.debug("unable to write SSE error because client disconnected");
+        }
+    }
+
+    private String safeMessage(Exception error) {
+        return error.getMessage() == null || error.getMessage().isBlank()
+                ? "upstream error"
+                : error.getMessage();
     }
 }

@@ -29,6 +29,9 @@ public class GenerationJob extends BaseEntity {
     @TableField("user_id")
     private Long userId;
 
+    @TableField("request_id")
+    private String requestId;
+
     @TableField("model")
     private String model;
 
